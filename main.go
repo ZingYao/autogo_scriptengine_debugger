@@ -283,7 +283,7 @@ func (app *App) deviceMenu() error {
 func (app *App) listDevices() error {
 	app.printer.Info("正在获取设备列表...")
 
-	if err := app.deviceMgr.DetectADB(); err != nil {
+	if _, err := app.deviceMgr.DetectADB(app.config.ADBPath); err != nil {
 		return err
 	}
 
@@ -561,8 +561,18 @@ func (app *App) autoConnectDevice() error {
 	app.printer.Info("正在检查设备连接...")
 
 	// 检测ADB
-	if err := app.deviceMgr.DetectADB(); err != nil {
+	detectedADBPath, err := app.deviceMgr.DetectADB(app.config.ADBPath)
+	if err != nil {
 		return err
+	}
+
+	// 如果配置中没有 ADB 路径，自动保存检测到的路径
+	if app.config.ADBPath == "" && detectedADBPath != "" {
+		app.config.ADBPath = detectedADBPath
+		app.printer.Verbose("自动保存 ADB 路径到配置: %s", detectedADBPath)
+		if err := app.configMgr.Save(app.config); err != nil {
+			app.printer.Verbose("保存 ADB 路径失败: %s", err)
+		}
 	}
 
 	// 获取设备列表

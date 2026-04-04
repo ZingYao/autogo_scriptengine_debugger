@@ -22,6 +22,7 @@ type Config struct {
 	ProjectPath      string `json:"projectPath"`
 	HTTPProxy        string `json:"httpProxy"`      // HTTP 代理地址
 	AGPath           string `json:"agPath"`         // AG 可执行文件路径
+	ADBPath          string `json:"adbPath"`        // ADB 可执行文件路径
 	SelectedScript   string `json:"selectedScript"` // 选中的脚本文件名
 }
 

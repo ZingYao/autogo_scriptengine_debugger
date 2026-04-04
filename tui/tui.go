@@ -82,6 +82,9 @@ type TUI struct {
 	// 项目日志是否显示
 	showProjectLog bool
 
+	// 全屏模式："" 非全屏, "debugLog" 调试器日志全屏, "projectLog" 项目日志全屏
+	fullScreenMode string
+
 	// 鼠标模式是否启用
 	mouseEnabled bool
 
@@ -183,8 +186,17 @@ func (t *TUI) setupUI() {
 	t.logView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyEscape:
+			// 如果在全屏模式，先退出全屏
+			if t.fullScreenMode == "debugLog" {
+				t.exitFullScreen()
+				return nil
+			}
 			// ESC 返回之前的菜单
 			t.restorePreviousMode()
+			return nil
+		case tcell.KeyEnter:
+			// Enter 进入全屏模式
+			t.enterFullScreen("debugLog")
 			return nil
 		case tcell.KeyTab:
 			// Tab 切换到项目日志
@@ -267,8 +279,17 @@ func (t *TUI) setupUI() {
 	t.projectLogView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyEscape:
+			// 如果在全屏模式，先退出全屏
+			if t.fullScreenMode == "projectLog" {
+				t.exitFullScreen()
+				return nil
+			}
 			// ESC 返回之前的菜单
 			t.restorePreviousMode()
+			return nil
+		case tcell.KeyEnter:
+			// Enter 进入全屏模式
+			t.enterFullScreen("projectLog")
 			return nil
 		case tcell.KeyTab:
 			// Tab 切换到调试器日志
@@ -417,6 +438,49 @@ func (t *TUI) restorePreviousMode() {
 	}
 }
 
+// enterFullScreen 进入全屏模式
+// mode: "debugLog" 调试器日志全屏, "projectLog" 项目日志全屏
+func (t *TUI) enterFullScreen(mode string) {
+	t.fullScreenMode = mode
+
+	// 创建全屏布局
+	fullScreenFlex := tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(t.statusBar, 1, 0, false) // 状态栏固定高度
+
+	if mode == "debugLog" {
+		// 只显示调试器日志
+		fullScreenFlex.AddItem(t.logView, 0, 1, true)
+		t.updateStatusBar("debugLogFullscreen")
+	} else if mode == "projectLog" {
+		// 只显示项目日志
+		fullScreenFlex.AddItem(t.projectLogView, 0, 1, true)
+		t.updateStatusBar("projectLogFullscreen")
+	}
+
+	// 设置新的根视图
+	t.app.SetRoot(fullScreenFlex, true)
+}
+
+// exitFullScreen 退出全屏模式
+func (t *TUI) exitFullScreen() {
+	// 记住当前聚焦的日志类型
+	currentFocus := t.fullScreenMode
+	t.fullScreenMode = ""
+
+	// 恢复原来的主布局
+	t.app.SetRoot(t.flex, true)
+
+	// 恢复焦点到之前的日志区域
+	if currentFocus == "debugLog" {
+		t.app.SetFocus(t.logView)
+		t.updateStatusBar("debugLog")
+	} else if currentFocus == "projectLog" {
+		t.app.SetFocus(t.projectLogView)
+		t.updateStatusBar("projectLog")
+	}
+}
+
 // restoreFocus 恢复主界面焦点和光标显示
 func (t *TUI) restoreFocus() {
 	t.currentMode = ""  // 返回主界面
@@ -432,9 +496,13 @@ func (t *TUI) updateStatusBar(mode string) {
 	case "menu":
 		t.statusBar.SetText("[yellow]快捷键:[white] 1-4/h/q 选择菜单 | L/D 查看日志 | Tab 切换日志 | Ctrl+数字 快速执行 | R 刷新 | F9 鼠标 | Ctrl+Q 退出")
 	case "debugLog":
-		t.statusBar.SetText("[yellow]操作提示:[white] ↑↓滚动 | PgUp/PgDn翻页 | Home/End 跳转首尾 | Tab 切换日志 | R 刷新 | C 清空 | ESC 返回菜单")
+		t.statusBar.SetText("[yellow]操作提示:[white] ↑↓滚动 | PgUp/PgDn翻页 | Home/End 跳转首尾 | Tab 切换日志 | Enter 全屏 | R 刷新 | C 清空 | ESC 返回菜单")
 	case "projectLog":
-		t.statusBar.SetText("[yellow]操作提示:[white] ↑↓滚动 | PgUp/PgDn翻页 | Home/End 跳转首尾 | Tab 切换日志 | R 刷新 | C 清空 | ESC 返回菜单")
+		t.statusBar.SetText("[yellow]操作提示:[white] ↑↓滚动 | PgUp/PgDn翻页 | Home/End 跳转首尾 | Tab 切换日志 | Enter 全屏 | R 刷新 | C 清空 | ESC 返回菜单")
+	case "debugLogFullscreen":
+		t.statusBar.SetText("[yellow]全屏模式:[white] ↑↓滚动 | PgUp/PgDn翻页 | Home/End 跳转首尾 | ESC 退出全屏 | R 刷新 | C 清空")
+	case "projectLogFullscreen":
+		t.statusBar.SetText("[yellow]全屏模式:[white] ↑↓滚动 | PgUp/PgDn翻页 | Home/End 跳转首尾 | ESC 退出全屏 | R 刷新 | C 清空")
 	case "submenu":
 		t.statusBar.SetText("[yellow]操作提示:[white] ↑↓选择 | Enter 确认 | ESC 返回主菜单")
 	default:
@@ -710,11 +778,21 @@ func (t *TUI) initialize() {
 
 		// 检测 ADB
 		t.printer.Verbose("检测 ADB...")
-		if err := t.deviceMgr.DetectADB(); err != nil {
+		detectedADBPath, err := t.deviceMgr.DetectADB(t.config.ADBPath)
+		if err != nil {
 			t.log("[red]错误: %s[white]", err)
 			return
 		}
 		t.printer.Verbose("ADB 已就绪")
+
+		// 如果配置中没有 ADB 路径，自动保存检测到的路径
+		if t.config.ADBPath == "" && detectedADBPath != "" {
+			t.config.ADBPath = detectedADBPath
+			t.printer.Verbose("自动保存 ADB 路径到配置: %s", detectedADBPath)
+			if err := t.configMgr.Save(t.config); err != nil {
+				t.printer.Verbose("保存 ADB 路径失败: %s", err)
+			}
+		}
 
 		// 检测 AG
 		t.printer.Verbose("检测 AG...")
@@ -810,6 +888,13 @@ func (t *TUI) initialize() {
 func (t *TUI) refreshScreen() {
 	t.log("[cyan]正在刷新页面...[white]")
 
+	// 如果在全屏模式，退出全屏
+	if t.fullScreenMode != "" {
+		t.exitFullScreen()
+		t.log("[green]页面刷新完成[white]")
+		return
+	}
+
 	// 重新设置根视图
 	t.app.SetRoot(t.flex, true)
 
@@ -826,9 +911,6 @@ func (t *TUI) refreshScreen() {
 		// 其他模式，返回主界面
 		t.restoreFocus()
 	}
-
-	// 强制重绘
-	t.app.Draw()
 
 	t.log("[green]页面刷新完成[white]")
 }
@@ -1720,6 +1802,7 @@ func (t *TUI) showConfigManager() {
 		AddItem("项目路径", "", '7', nil).
 		AddItem("HTTP 代理", "", '8', nil).
 		AddItem("AG 路径", "", '9', nil).
+		AddItem("ADB 路径", "", 'a', nil).
 		AddItem("返回", "", 'q', nil)
 	configMenu.ShowSecondaryText(false)
 	configMenu.SetBorder(true)
@@ -1768,6 +1851,7 @@ func (t *TUI) showConfigManager() {
 	t.configLog(configLogView, "[white]项目路径: %s", t.config.ProjectPath)
 	t.configLog(configLogView, "[white]HTTP 代理: %s", t.config.HTTPProxy)
 	t.configLog(configLogView, "[white]AG 路径: %s", t.config.AGPath)
+	t.configLog(configLogView, "[white]ADB 路径: %s", t.config.ADBPath)
 
 	// 设置菜单选择处理
 	configMenu.SetSelectedFunc(func(index int, name string, secondary string, shortcut rune) {
@@ -1788,6 +1872,8 @@ func (t *TUI) showConfigManager() {
 			t.editConfigItem("HTTP 代理", "httpProxy", t.config.HTTPProxy, configLogView)
 		case '9':
 			t.editConfigItem("AG 路径", "agPath", t.config.AGPath, configLogView)
+		case 'a':
+			t.editConfigItem("ADB 路径", "adbPath", t.config.ADBPath, configLogView)
 		case 'q':
 			t.currentMode = "" // 返回主界面
 			t.restoreFocus()
@@ -1852,6 +1938,8 @@ func (t *TUI) editConfigItem(name, key, currentValue string, logView *tview.Text
 			t.agManager.SetHTTPProxy(newValue)
 		case "agPath":
 			t.config.AGPath = newValue
+		case "adbPath":
+			t.config.ADBPath = newValue
 		}
 
 		// 保存配置
@@ -2346,9 +2434,6 @@ func (t *TUI) toggleProjectLog() {
 			AddItem(t.logView, 0, 1, false)
 		t.log("[cyan]项目日志已隐藏[white]")
 	}
-
-	// 强制刷新整个屏幕
-	t.app.Draw()
 }
 
 // toggleMouse 切换鼠标模式
@@ -2646,7 +2731,7 @@ func (t *TUI) addRequireAndReplace(goModPath, module, replacePath string) error 
 			if !strings.HasPrefix(lines[i+1], "require (") {
 				newLines = append(newLines, "")
 				newLines = append(newLines, "require (")
-				newLines = append(newLines, fmt.Sprintf("\t%s v0.0.0", module))
+				newLines = append(newLines, fmt.Sprintf("\t%s v0.0.20", module))
 				newLines = append(newLines, ")")
 				requireAdded = true
 			}

@@ -1,20 +1,22 @@
 # AutoGo ScriptEngine Debugger
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/ZingYao/autogo_scriptengine_debugger?include_prereleases)](https://github.com/ZingYao/autogo_scriptengine_debugger/releases)
+[!\[Go Version\](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat\&logo=go null)](https://golang.org)
+[!\[License\](https://img.shields.io/badge/license-MIT-blue.svg null)](LICENSE)
+[!\[Release\](https://img.shields.io/github/v/release/ZingYao/autogo\_scriptengine\_debugger?include\_prereleases null)](https://github.com/ZingYao/autogo_scriptengine_debugger/releases)
 
-一个现代化的 AutoGo 脚本开发调试工具，提供友好的 TUI 界面和强大的调试功能。
+一个现代化的 AutoGo ScriptEngine 开发调试工具，提供友好的 TUI 界面和强大的调试功能。
 
 ## ✨ 功能特性
 
 ### 🎨 现代化 TUI 界面
+
 - 直观的终端用户界面
 - 实时日志输出显示
 - 支持鼠标操作
 - 彩色语法高亮
 
 ### 🚀 核心功能
+
 - **项目管理**: 初始化、编译、部署 AutoGo 项目
 - **设备管理**: 自动检测设备、连接设备、获取设备信息
 - **脚本运行**: 支持 Lua 和 JavaScript 脚本
@@ -22,16 +24,17 @@
 - **AG 管理**: 自动下载和更新 AutoGo 工具
 
 ### 🔧 开发工具
+
 - 代码风格支持: AutoGo、LrAppSoft、NodeJS
 - 自动生成项目模板
 - 配置文件管理
 - 多设备支持
 
 ### 🌍 跨平台支持
+
 - ✅ Windows (AMD64)
 - ✅ macOS (ARM64 - M1/M2/M3)
 - ✅ macOS (AMD64 - Intel)
-- ✅ Linux
 
 ## 📥 安装
 
@@ -39,15 +42,16 @@
 
 访问 [Releases](https://github.com/ZingYao/autogo_scriptengine_debugger/releases) 页面下载最新版本：
 
-| 平台 | 文件名 | 说明 |
-|------|--------|------|
-| Windows | `AutoGoScriptEngineDebugger-Windows.zip` | 包含 `.exe` 可执行文件 |
+| 平台        | 文件名                                           | 说明              |
+| --------- | --------------------------------------------- | --------------- |
+| Windows   | `AutoGoScriptEngineDebugger-Windows.zip`      | 包含 `.exe` 可执行文件 |
 | macOS ARM | `AutoGoScriptEngineDebugger-macOS-ARM.tar.gz` | 适用于 M1/M2/M3 芯片 |
-| macOS AMD | `AutoGoScriptEngineDebugger-macOS-AMD.tar.gz` | 适用于 Intel 芯片 |
+| macOS AMD | `AutoGoScriptEngineDebugger-macOS-AMD.tar.gz` | 适用于 Intel 芯片    |
 
 #### 安装步骤
 
 **Windows:**
+
 ```bash
 # 1. 解压缩
 unzip AutoGoScriptEngineDebugger-Windows.zip
@@ -57,6 +61,7 @@ unzip AutoGoScriptEngineDebugger-Windows.zip
 ```
 
 **macOS:**
+
 ```bash
 # 1. 解压缩
 tar -xzf AutoGoScriptEngineDebugger-macOS-*.tar.gz
@@ -71,10 +76,12 @@ chmod +x AutoGoScriptEngineDebugger*
 ### 从源码构建
 
 **前置要求:**
+
 - Go 1.21 或更高版本
 - Git
 
 **构建步骤:**
+
 ```bash
 # 克隆仓库
 git clone https://github.com/ZingYao/autogo_scriptengine_debugger.git
@@ -127,29 +134,31 @@ go build -o AutoGoScriptEngineDebugger .
 ## ⌨️ 快捷键
 
 ### 主菜单
-| 按键 | 功能 |
-|------|------|
-| `1-4` | 快速选择菜单项 |
-| `i` | 项目初始化 |
-| `h` | 帮助 |
-| `q` | 退出 |
-| `l` | 查看调试器日志 |
-| `d` | 查看项目运行日志 |
-| `r` | 刷新页面 |
-| `F9` | 切换鼠标模式 |
-| `Ctrl+Q` | 直接退出 |
-| `Ctrl+1-4` | 快速执行菜单项 |
+
+| 按键         | 功能       |
+| ---------- | -------- |
+| `1-4`      | 快速选择菜单项  |
+| `i`        | 项目初始化    |
+| `h`        | 帮助       |
+| `q`        | 退出       |
+| `l`        | 查看调试器日志  |
+| `d`        | 查看项目运行日志 |
+| `r`        | 刷新页面     |
+| `F9`       | 切换鼠标模式   |
+| `Ctrl+Q`   | 直接退出     |
+| `Ctrl+1-4` | 快速执行菜单项  |
 
 ### 日志浏览
-| 按键 | 功能 |
-|------|------|
-| `↑/↓` | 滚动 |
-| `PgUp/PgDn` | 翻页 |
-| `Home/End` | 跳转首尾 |
-| `Tab` | 切换日志 |
-| `r` | 刷新页面 |
-| `c` | 清空日志 |
-| `ESC` | 返回菜单 |
+
+| 按键          | 功能   |
+| ----------- | ---- |
+| `↑/↓`       | 滚动   |
+| `PgUp/PgDn` | 翻页   |
+| `Home/End`  | 跳转首尾 |
+| `Tab`       | 切换日志 |
+| `r`         | 刷新页面 |
+| `c`         | 清空日志 |
+| `ESC`       | 返回菜单 |
 
 ## 📁 项目结构
 
@@ -215,6 +224,7 @@ GOOS=darwin GOARCH=amd64 go build -o AutoGoScriptEngineDebuggerAmd .
 配置文件保存在 `当前执行目录/.autogo_scriptengine_debugger/config.json`
 
 **配置项：**
+
 - `codeStyle`: 代码风格（autogo/lrappsoft/nodejs）
 - `deviceServiceUrl`: 设备服务地址
 - `deviceId`: 设备 ID
@@ -228,14 +238,17 @@ GOOS=darwin GOARCH=amd64 go build -o AutoGoScriptEngineDebuggerAmd .
 ## 🐛 故障排除
 
 ### 页面显示错乱
+
 - 按 `r` 键强制刷新页面
 
 ### 设备连接失败
+
 1. 检查 USB 连接或网络连接
 2. 确认 ADB 已安装并在 PATH 中
 3. 在"设备管理"中重新连接设备
 
 ### AG 未找到
+
 1. 在主菜单选择 `[3] AG 更新`
 2. 选择 `检查更新` 自动下载安装
 3. 或手动下载 AG 并设置环境变量 `AUTOGO_AG_PATH`
@@ -257,3 +270,4 @@ GOOS=darwin GOARCH=amd64 go build -o AutoGoScriptEngineDebuggerAmd .
 - [AutoGo](https://github.com/Dasongzi1366/AutoGo) - AutoGo 脚本引擎
 - [tview](https://github.com/rivo/tview) - 终端 UI 库
 - [tcell](https://github.com/gdamore/tcell) - 终端处理库
+

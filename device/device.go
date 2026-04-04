@@ -32,27 +32,39 @@ func NewManager(p *printer.Printer) *Manager {
 }
 
 // DetectADB 检测ADB路径
-func (m *Manager) DetectADB() error {
+// configADBPath: 配置文件中指定的 ADB 路径（优先使用）
+// 返回: 检测到的 ADB 路径，供调用者保存到配置
+func (m *Manager) DetectADB(configADBPath string) (string, error) {
 	m.printer.Verbose("正在检测 ADB 路径...")
 
-	// 检查环境变量
+	// 1. 首先检查配置文件中的 ADB 路径
+	if configADBPath != "" {
+		if _, err := exec.LookPath(configADBPath); err == nil {
+			m.printer.Verbose("使用配置文件中的 ADB 路径: %s", configADBPath)
+			os.Setenv("AUTOGO_ADB_PATH", configADBPath)
+			return configADBPath, nil
+		}
+		m.printer.Warning("配置文件中的 ADB 路径无效: %s", configADBPath)
+	}
+
+	// 2. 检查环境变量
 	if adbPath := os.Getenv("AUTOGO_ADB_PATH"); adbPath != "" {
 		if _, err := exec.LookPath(adbPath); err == nil {
 			m.printer.Verbose("使用环境变量中的 ADB 路径: %s", adbPath)
 			os.Setenv("AUTOGO_ADB_PATH", adbPath)
-			return nil
+			return adbPath, nil
 		}
 		m.printer.Warning("环境变量 AUTOGO_ADB_PATH 指定的路径无效: %s", adbPath)
 	}
 
-	// 检查系统PATH
+	// 3. 检查系统PATH
 	if adbPath, err := exec.LookPath("adb"); err == nil {
 		m.printer.Verbose("检测到系统 ADB: %s", adbPath)
 		os.Setenv("AUTOGO_ADB_PATH", adbPath)
-		return nil
+		return adbPath, nil
 	}
 
-	// 检查常见路径
+	// 4. 检查常见路径
 	homeDir, _ := os.UserHomeDir()
 	commonPaths := []string{
 		filepath.Join(homeDir, "Library/Android/sdk/platform-tools/adb"),
@@ -65,11 +77,11 @@ func (m *Manager) DetectADB() error {
 		if _, err := exec.LookPath(path); err == nil {
 			m.printer.Verbose("找到 ADB: %s", path)
 			os.Setenv("AUTOGO_ADB_PATH", path)
-			return nil
+			return path, nil
 		}
 	}
 
-	return fmt.Errorf("未找到 ADB 命令")
+	return "", fmt.Errorf("未找到 ADB 命令")
 }
 
 // GetConnectedDevices 获取已连接设备列表
