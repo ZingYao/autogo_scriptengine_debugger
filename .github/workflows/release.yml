@@ -1,0 +1,83 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build for Windows
+        run: |
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o AutoGoScriptEngineDebugger.exe .
+          zip AutoGoScriptEngineDebugger-Windows.zip AutoGoScriptEngineDebugger.exe
+
+      - name: Build for macOS ARM
+        run: |
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o AutoGoScriptEngineDebuggerArm .
+          chmod +x AutoGoScriptEngineDebuggerArm
+          tar -czf AutoGoScriptEngineDebugger-macOS-ARM.tar.gz AutoGoScriptEngineDebuggerArm
+
+      - name: Build for macOS AMD
+        run: |
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o AutoGoScriptEngineDebuggerAmd .
+          chmod +x AutoGoScriptEngineDebuggerAmd
+          tar -czf AutoGoScriptEngineDebugger-macOS-AMD.tar.gz AutoGoScriptEngineDebuggerAmd
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          name: Release ${{ steps.get_version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+          files: |
+            AutoGoScriptEngineDebugger-Windows.zip
+            AutoGoScriptEngineDebugger-macOS-ARM.tar.gz
+            AutoGoScriptEngineDebugger-macOS-AMD.tar.gz
+          body: |
+            ## AutoGo ScriptEngine Debugger ${{ steps.get_version.outputs.VERSION }}
+            
+            ### 下载说明
+            
+            - **Windows**: `AutoGoScriptEngineDebugger-Windows.zip`
+            - **macOS ARM (M1/M2/M3)**: `AutoGoScriptEngineDebugger-macOS-ARM.tar.gz`
+            - **macOS AMD (Intel)**: `AutoGoScriptEngineDebugger-macOS-AMD.tar.gz`
+            
+            ### 安装方法
+            
+            #### Windows
+            1. 下载 `AutoGoScriptEngineDebugger-Windows.zip`
+            2. 解压缩得到 `AutoGoScriptEngineDebugger.exe`
+            3. 双击运行或在命令行中执行
+            
+            #### macOS
+            1. 下载对应架构的压缩包
+            2. 解压缩：`tar -xzf AutoGoScriptEngineDebugger-*.tar.gz`
+            3. 添加执行权限：`chmod +x AutoGoScriptEngineDebugger*`
+            4. 运行：`./AutoGoScriptEngineDebugger*`
+            
+            ### 更新内容
+            
+            请查看 [Commits](https://github.com/${{ github.repository }}/commits/${{ steps.get_version.outputs.VERSION }}) 了解详细更新内容。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
