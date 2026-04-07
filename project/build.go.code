@@ -1,0 +1,1074 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/ZingYao/autogo_scriptengine/js_engine"
+	js_autogo "github.com/ZingYao/autogo_scriptengine/js_engine/define/autogo/all_models"
+	js_model "github.com/ZingYao/autogo_scriptengine/js_engine/model"
+	"github.com/ZingYao/autogo_scriptengine/lua_engine"
+	lua_autogo "github.com/ZingYao/autogo_scriptengine/lua_engine/define/autogo/all_models"
+	lua_model "github.com/ZingYao/autogo_scriptengine/lua_engine/model"
+
+	"github.com/dop251/goja"
+	lua "github.com/yuin/gopher-lua"
+)
+
+// ========================================
+// 配置常量 - 由构建器自动生成
+// ========================================
+
+// CodeStyle 代码风格
+const CodeStyle = "{{.CodeStyle}}"
+
+// ScriptType 脚本类型
+const ScriptType = "{{.ScriptType}}"
+
+// LoadMode 脚本加载模式: http, sdcard, embed
+const LoadMode = "{{.LoadMode}}"
+
+// EncryptionType 加密类型: aes, rsa
+const EncryptionType = "{{.EncryptionType}}"
+
+// SecurityConfig 安全配置
+const (
+	EnableObfuscate = {{if .EnableObfuscate}}true{{else}}false{{end}}
+	EnableBytecode  = {{if .EnableBytecode}}true{{else}}false{{end}}
+	EnableEncrypt   = {{if .EnableEncrypt}}true{{else}}false{{end}}
+)
+
+// EncryptionKey AES 加密密钥（Base64 编码）或 RSA 私钥（PEM 格式）
+const EncryptionKey = `{{.EncryptionKey}}`
+
+{{if eq .LoadMode "http"}}
+// HTTPScriptURL HTTP 脚本下载 URL
+const HTTPScriptURL = "{{.HTTPScriptURL}}"
+
+// HTTPPersistPath HTTP 脚本持久化目录
+const HTTPPersistPath = "{{.HTTPPersistPath}}"
+{{end}}
+
+{{if eq .LoadMode "sdcard"}}
+// SDCardScriptPath SDCard 脚本路径
+const SDCardScriptPath = "{{.SDCardScriptPath}}"
+{{end}}
+
+{{if eq .LoadMode "embed"}}
+// EmbedMainScript 主脚本文件名
+const EmbedMainScript = "{{.EmbedMainScript}}"
+{{end}}
+
+// ========================================
+// 脚本类型定义
+// ========================================
+
+type ScriptTypeConst string
+
+const (
+	ScriptTypeLua        ScriptTypeConst = "lua"
+	ScriptTypeJavaScript ScriptTypeConst = "javascript"
+)
+
+type OperationType string
+
+const (
+	OpRun      OperationType = "run"
+	OpStop     OperationType = "stop"
+	OpPause    OperationType = "pause"
+	OpResume   OperationType = "resume"
+	OpStatus   OperationType = "status"
+	OpGetError OperationType = "get_error"
+)
+
+type ScriptStatus string
+
+const (
+	StatusIdle    ScriptStatus = "idle"
+	StatusRunning ScriptStatus = "running"
+	StatusPaused  ScriptStatus = "paused"
+	StatusStopped ScriptStatus = "stopped"
+	StatusError   ScriptStatus = "error"
+)
+
+// ========================================
+// 消息结构
+// ========================================
+
+type RequestMessage struct {
+	ScriptType string                 `json:"script_type"`
+	CodeStyle  string                 `json:"code_style"`
+	Operation  OperationType          `json:"operation"`
+	ScriptPath string                 `json:"script_path"`
+	WorkDir    string                 `json:"work_dir"`
+	ScriptID   string                 `json:"script_id"`
+	Parameters map[string]interface{} `json:"parameters"`
+}
+
+type ResponseMessage struct {
+	Success   bool                   `json:"success"`
+	Status    ScriptStatus           `json:"status"`
+	Error     string                 `json:"error"`
+	Message   string                 `json:"message"`
+	Data      map[string]interface{} `json:"data"`
+	ScriptID  string                 `json:"script_id"`
+	Timestamp int64                  `json:"timestamp"`
+}
+
+// ========================================
+// 脚本执行管理
+// ========================================
+
+type ScriptExecution struct {
+	ScriptID   string
+	Status     ScriptStatus
+	Error      error
+	StartTime  time.Time
+	EndTime    time.Time
+	Engine     interface {
+		Start() error
+		Pause()
+		Resume()
+		Stop()
+		Close()
+	}
+	ScriptType ScriptTypeConst
+	CodeStyle  string
+	ScriptPath string
+	WorkDir    string
+}
+
+type ScriptManager struct {
+	mu         sync.RWMutex
+	executions map[string]*ScriptExecution
+}
+
+func NewScriptManager() *ScriptManager {
+	return &ScriptManager{
+		executions: make(map[string]*ScriptExecution),
+	}
+}
+
+func (sm *ScriptManager) Add(scriptID string, execution *ScriptExecution) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.executions[scriptID] = execution
+}
+
+func (sm *ScriptManager) Get(scriptID string) (*ScriptExecution, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	exec, ok := sm.executions[scriptID]
+	return exec, ok
+}
+
+func (sm *ScriptManager) UpdateStatus(scriptID string, status ScriptStatus) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if exec, ok := sm.executions[scriptID]; ok {
+		exec.Status = status
+		if status == StatusStopped || status == StatusError {
+			exec.EndTime = time.Now()
+		}
+	}
+}
+
+func (sm *ScriptManager) SetError(scriptID string, err error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if exec, ok := sm.executions[scriptID]; ok {
+		exec.Error = err
+		exec.Status = StatusError
+		exec.EndTime = time.Now()
+	}
+}
+
+func (sm *ScriptManager) Remove(scriptID string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	delete(sm.executions, scriptID)
+}
+
+// ========================================
+// 虚拟文件系统
+// ========================================
+
+// VirtualFS 虚拟文件系统
+type VirtualFS struct {
+	mu       sync.RWMutex
+	files    map[string][]byte
+	basePath string
+}
+
+// NewVirtualFS 创建新的虚拟文件系统
+func NewVirtualFS() *VirtualFS {
+	return &VirtualFS{
+		files: make(map[string][]byte),
+	}
+}
+
+// WriteFile 写入文件到虚拟文件系统
+func (vfs *VirtualFS) WriteFile(path string, content []byte) {
+	vfs.mu.Lock()
+	defer vfs.mu.Unlock()
+	// 标准化路径
+	path = filepath.ToSlash(path)
+	path = strings.TrimPrefix(path, "/")
+	vfs.files[path] = content
+}
+
+// ReadFile 从虚拟文件系统读取文件
+func (vfs *VirtualFS) ReadFile(path string) ([]byte, error) {
+	vfs.mu.Lock()
+	defer vfs.mu.Unlock()
+	// 标准化路径
+	path = filepath.ToSlash(path)
+	path = strings.TrimPrefix(path, "/")
+	content, ok := vfs.files[path]
+	if !ok {
+		return nil, fmt.Errorf("文件不存在: %s", path)
+	}
+	return content, nil
+}
+
+// FileExists 检查文件是否存在
+func (vfs *VirtualFS) FileExists(path string) bool {
+	vfs.mu.RLock()
+	defer vfs.mu.RUnlock()
+	path = filepath.ToSlash(path)
+	path = strings.TrimPrefix(path, "/")
+	_, ok := vfs.files[path]
+	return ok
+}
+
+// ListFiles 列出所有文件
+func (vfs *VirtualFS) ListFiles() []string {
+	vfs.mu.RLock()
+	defer vfs.mu.RUnlock()
+	var files []string
+	for path := range vfs.files {
+		files = append(files, path)
+	}
+	return files
+}
+
+// ========================================
+// AES 解密函数
+// ========================================
+
+// {{if and .EnableEncrypt (eq .EncryptionType "aes")}}
+// decryptAES 使用 AES-GCM 解密数据
+func decryptAES(encryptedBase64 string, keyBase64 string) ([]byte, error) {
+	// 解码 Base64 密钥
+	key, err := base64.StdEncoding.DecodeString(keyBase64)
+	if err != nil {
+		return nil, fmt.Errorf("密钥 Base64 解码失败: %v", err)
+	}
+
+	// 解码 Base64 加密数据
+	encryptedData, err := base64.StdEncoding.DecodeString(encryptedBase64)
+	if err != nil {
+		return nil, fmt.Errorf("数据 Base64 解码失败: %v", err)
+	}
+
+	// 检查密钥长度
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return nil, fmt.Errorf("无效的密钥长度: %d (需要 16, 24 或 32 字节)", len(key))
+	}
+
+	// 创建 AES 块
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("创建 AES 块失败: %v", err)
+	}
+
+	// 检查加密数据长度 (至少需要 nonce + tag)
+	if len(encryptedData) < 12+16 {
+		return nil, fmt.Errorf("加密数据太短: %d", len(encryptedData))
+	}
+
+	// 提取 nonce (前 12 字节)
+	nonce := encryptedData[:12]
+	ciphertext := encryptedData[12:]
+
+	// 创建 GCM 模式
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("创建 GCM 模式失败: %v", err)
+	}
+
+	// 解密
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("解密失败: %v", err)
+	}
+
+	return plaintext, nil
+}
+// {{end}}
+
+// ========================================
+// RSA 解密函数
+// ========================================
+
+// {{if and .EnableEncrypt (eq .EncryptionType "rsa")}}
+// decryptRSA 使用 RSA-OAEP 解密数据
+func decryptRSA(encryptedBase64 string, privateKeyPEM string) ([]byte, error) {
+	// 解析 PEM 格式的私钥
+	block, _ := pem.Decode([]byte(privateKeyPEM))
+	if block == nil {
+		return nil, fmt.Errorf("无法解析 PEM 格式的私钥")
+	}
+
+	// 解析 PKCS#8 或 PKCS#1 格式的私钥
+	var privateKey *rsa.PrivateKey
+	var err error
+	
+	// 尝试 PKCS#8 格式
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err == nil {
+		var ok bool
+		privateKey, ok = key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("私钥不是 RSA 格式")
+		}
+	} else {
+		// 尝试 PKCS#1 格式
+		privateKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("无法解析私钥: %v", err)
+		}
+	}
+
+	// 解码 Base64 加密数据
+	encryptedData, err := base64.StdEncoding.DecodeString(encryptedBase64)
+	if err != nil {
+		return nil, fmt.Errorf("数据 Base64 解码失败: %v", err)
+	}
+
+	// 使用 RSA-OAEP 解密
+	hash := sha256.New()
+	plaintext, err := rsa.DecryptOAEP(hash, rand.Reader, privateKey, encryptedData, nil)
+	if err != nil {
+		return nil, fmt.Errorf("RSA 解密失败: %v", err)
+	}
+
+	return plaintext, nil
+}
+// {{end}}
+
+// ========================================
+// 通用解密函数
+// ========================================
+
+// {{if .EnableEncrypt}}
+// decrypt 根据加密类型解密数据
+func decrypt(encryptedBase64 string) ([]byte, error) {
+	switch EncryptionType {
+	case "aes":
+		return decryptAES(encryptedBase64, EncryptionKey)
+	case "rsa":
+		return decryptRSA(encryptedBase64, EncryptionKey)
+	default:
+		return nil, fmt.Errorf("不支持的加密类型: %s", EncryptionType)
+	}
+}
+// {{end}}
+
+// ========================================
+// 脚本加载器
+// ========================================
+
+// {{if eq .LoadMode "http"}}
+// loadScriptFromHTTP 从 HTTP 加载脚本并持久化
+func loadScriptFromHTTP(url string, persistPath string) ([]byte, error) {
+	// 创建 HTTP 客户端
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	// 发送 GET 请求
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP 请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 检查响应状态
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP 请求返回错误状态: %d", resp.StatusCode)
+	}
+
+	// 读取响应体
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应体失败: %v", err)
+	}
+
+	// 持久化到本地文件
+	if persistPath != "" {
+		// 创建目录
+		dir := filepath.Dir(persistPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Printf("警告: 无法创建持久化目录: %v", err)
+		} else {
+			// 写入文件
+			if err := os.WriteFile(persistPath, data, 0644); err != nil {
+				log.Printf("警告: 无法持久化脚本: %v", err)
+			} else {
+				log.Printf("脚本已持久化到: %s", persistPath)
+			}
+		}
+	}
+
+	return data, nil
+}
+// {{end}}
+
+// {{if eq .LoadMode "sdcard"}}
+// loadScriptFromSDCard 从 SDCard 加载脚本
+func loadScriptFromSDCard(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取文件失败: %v", err)
+	}
+	return data, nil
+}
+// {{end}}
+
+// {{if eq .LoadMode "embed"}}
+// embedFS 嵌入文件系统（由构建器生成）
+// var embedFS embed.FS
+// {{end}}
+
+// ========================================
+// TCP 服务器
+// ========================================
+
+type TCPServer struct {
+	manager   *ScriptManager
+	listener  net.Listener
+	addr      string
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+}
+
+func NewTCPServer(addr string) *TCPServer {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &TCPServer{
+		manager: NewScriptManager(),
+		addr:    addr,
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+}
+
+func (s *TCPServer) Start() error {
+	listener, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("监听失败: %w", err)
+	}
+	s.listener = listener
+
+	log.Printf("TCP Socket 服务器启动: %s", s.addr)
+
+	s.wg.Add(1)
+	go s.acceptLoop()
+
+	return nil
+}
+
+func (s *TCPServer) acceptLoop() {
+	defer s.wg.Done()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+			conn, err := s.listener.Accept()
+			if err != nil {
+				select {
+				case <-s.ctx.Done():
+					return
+				default:
+					log.Printf("接受连接失败: %v", err)
+					continue
+				}
+			}
+
+			s.wg.Add(1)
+			go s.handleConnection(conn)
+		}
+	}
+}
+
+func (s *TCPServer) handleConnection(conn net.Conn) {
+	defer s.wg.Done()
+	defer conn.Close()
+
+	remoteAddr := conn.RemoteAddr().String()
+	log.Printf("新连接: %s", remoteAddr)
+
+	conn.SetDeadline(time.Time{})
+
+	reader := bufio.NewReader(conn)
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err.Error() != "EOF" {
+					log.Printf("读取连接 %s 失败: %v", remoteAddr, err)
+				}
+				return
+			}
+
+			line = line[:len(line)-1]
+			if line == "" {
+				continue
+			}
+
+			var req RequestMessage
+			if err := json.Unmarshal([]byte(line), &req); err != nil {
+				s.sendResponse(conn, ResponseMessage{
+					Success:   false,
+					Error:     "解析请求失败: " + err.Error(),
+					Timestamp: time.Now().Unix(),
+				})
+				continue
+			}
+
+			resp := s.handleRequest(req)
+			s.sendResponse(conn, resp)
+		}
+	}
+}
+
+func (s *TCPServer) handleRequest(req RequestMessage) ResponseMessage {
+	switch req.Operation {
+	case OpRun:
+		return s.handleRun(req)
+	case OpStop:
+		return s.handleStop(req)
+	case OpPause:
+		return s.handlePause(req)
+	case OpResume:
+		return s.handleResume(req)
+	case OpStatus:
+		return s.handleStatus(req)
+	case OpGetError:
+		return s.handleError(req)
+	default:
+		return ResponseMessage{
+			Success:   false,
+			Error:     "未知操作: " + string(req.Operation),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+}
+
+func (s *TCPServer) handleRun(req RequestMessage) ResponseMessage {
+	// 根据加载模式加载脚本
+	var scriptContent string
+	var err error
+
+	switch LoadMode {
+	case "http":
+		// {{if eq .LoadMode "http"}}
+		scriptContent, err = loadScriptFromHTTP(HTTPScriptURL)
+		// {{end}}
+	case "sdcard":
+		// {{if eq .LoadMode "sdcard"}}
+		scriptContent, err = loadScriptFromSDCard(SDCardScriptPath)
+		// {{end}}
+	case "embed":
+		// {{if eq .LoadMode "embed"}}
+		// 从嵌入文件系统加载
+		// scriptContent, err = loadScriptFromEmbed(EmbedMainScript)
+		// {{end}}
+	default:
+		return ResponseMessage{
+			Success:   false,
+			Error:     "不支持的加载模式: " + LoadMode,
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	if err != nil {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "加载脚本失败: " + err.Error(),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	// {{if .EnableEncrypt}}
+	// 解密脚本
+	if EnableEncrypt {
+		decrypted, err := decryptAES(scriptContent, EncryptionKey)
+		if err != nil {
+			return ResponseMessage{
+				Success:   false,
+				Error:     "解密脚本失败: " + err.Error(),
+				Timestamp: time.Now().Unix(),
+			}
+		}
+		scriptContent = string(decrypted)
+	}
+	// {{end}}
+
+	// 创建引擎并执行
+	engine, err := s.createEngine(ScriptTypeConst(ScriptType), CodeStyle, scriptContent)
+	if err != nil {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "创建引擎失败: " + err.Error(),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	scriptID := fmt.Sprintf("script_%d", time.Now().UnixNano())
+	execution := &ScriptExecution{
+		ScriptID:   scriptID,
+		Status:     StatusRunning,
+		StartTime:  time.Now(),
+		Engine:     engine,
+		ScriptType: ScriptTypeConst(ScriptType),
+		CodeStyle:  CodeStyle,
+	}
+
+	s.manager.Add(scriptID, execution)
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.manager.SetError(scriptID, fmt.Errorf("panic: %v", r))
+				log.Printf("脚本执行 panic: %s, %v", scriptID, r)
+			}
+			engine.Close()
+		}()
+
+		if err := engine.Start(); err != nil {
+			s.manager.SetError(scriptID, err)
+			log.Printf("脚本执行失败: %s, %v", scriptID, err)
+		} else {
+			s.manager.UpdateStatus(scriptID, StatusStopped)
+			log.Printf("脚本执行完成: %s", scriptID)
+		}
+	}()
+
+	log.Printf("脚本已启动: %s", scriptID)
+	return ResponseMessage{
+		Success:   true,
+		Status:    StatusRunning,
+		Message:   "脚本已启动",
+		ScriptID:  scriptID,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handleStop(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "脚本未运行",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	if exec.Status != StatusRunning && exec.Status != StatusPaused {
+		return ResponseMessage{
+			Success:   false,
+			Status:    exec.Status,
+			Error:     fmt.Sprintf("脚本状态为 %s，无法停止", exec.Status),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec.Engine.Stop()
+	s.manager.UpdateStatus(scriptID, StatusStopped)
+	log.Printf("脚本已停止: %s", scriptID)
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    StatusStopped,
+		Message:   "脚本已停止",
+		ScriptID:  scriptID,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handlePause(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "脚本未运行",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	if exec.Status != StatusRunning {
+		return ResponseMessage{
+			Success:   false,
+			Status:    exec.Status,
+			Error:     fmt.Sprintf("脚本状态为 %s，无法暂停", exec.Status),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec.Engine.Pause()
+	s.manager.UpdateStatus(scriptID, StatusPaused)
+	log.Printf("脚本已暂停: %s", scriptID)
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    StatusPaused,
+		Message:   "脚本已暂停",
+		ScriptID:  scriptID,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handleResume(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "脚本未运行",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	if exec.Status != StatusPaused {
+		return ResponseMessage{
+			Success:   false,
+			Status:    exec.Status,
+			Error:     fmt.Sprintf("脚本状态为 %s，无法恢复", exec.Status),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec.Engine.Resume()
+	s.manager.UpdateStatus(scriptID, StatusRunning)
+	log.Printf("脚本已恢复: %s", scriptID)
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    StatusRunning,
+		Message:   "脚本已恢复",
+		ScriptID:  scriptID,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handleStatus(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   true,
+			Status:    StatusIdle,
+			Message:   "脚本未运行",
+			ScriptID:  scriptID,
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	data := map[string]interface{}{
+		"status":     string(exec.Status),
+		"start_time": exec.StartTime.Format(time.RFC3339),
+		"script_id":  exec.ScriptID,
+	}
+
+	if !exec.EndTime.IsZero() {
+		data["end_time"] = exec.EndTime.Format(time.RFC3339)
+		data["duration"] = exec.EndTime.Sub(exec.StartTime).String()
+	} else {
+		data["duration"] = time.Since(exec.StartTime).String()
+	}
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    exec.Status,
+		Message:   "状态查询成功",
+		ScriptID:  scriptID,
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handleError(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   true,
+			Status:    StatusIdle,
+			Message:   "脚本未运行",
+			ScriptID:  scriptID,
+			Data:      map[string]interface{}{"error": "no error"},
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	data := map[string]interface{}{
+		"status":     string(exec.Status),
+		"start_time": exec.StartTime.Format(time.RFC3339),
+	}
+
+	if exec.Error != nil {
+		data["error"] = exec.Error.Error()
+		data["has_error"] = true
+	} else {
+		data["error"] = "no error"
+		data["has_error"] = false
+	}
+
+	if !exec.EndTime.IsZero() {
+		data["end_time"] = exec.EndTime.Format(time.RFC3339)
+	}
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    exec.Status,
+		Message:   "错误信息获取成功",
+		ScriptID:  scriptID,
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) sendResponse(conn net.Conn, resp ResponseMessage) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("序列化响应失败: %v", err)
+		return
+	}
+
+	conn.Write(append(data, '\n'))
+}
+
+// ========================================
+// 引擎创建
+// ========================================
+
+func (s *TCPServer) createEngine(scriptType ScriptTypeConst, codeStyle string, scriptContent string) (interface {
+	Start() error
+	Pause()
+	Resume()
+	Stop()
+	Close()
+}, error) {
+	switch scriptType {
+	case ScriptTypeLua:
+		config := lua_engine.DefaultConfig()
+		engine := lua_engine.NewLuaEngine(&config)
+
+		switch codeStyle {
+		case "autogo":
+			engine.RegisterModule(lua_autogo.AllModules...)
+		default:
+			engine.Close()
+			return nil, fmt.Errorf("不支持的代码风格: %s", codeStyle)
+		}
+
+		return &luaEngineWrapper{engine: engine, scriptContent: scriptContent}, nil
+
+	case ScriptTypeJavaScript:
+		config := js_engine.DefaultConfig()
+		engine := js_engine.NewJSEngine(&config)
+
+		switch codeStyle {
+		case "autogo":
+			engine.RegisterModule(js_autogo.AllModules...)
+		default:
+			engine.Close()
+			return nil, fmt.Errorf("不支持的代码风格: %s", codeStyle)
+		}
+
+		return &jsEngineWrapper{engine: engine, scriptContent: scriptContent}, nil
+
+	default:
+		return nil, fmt.Errorf("不支持的脚本类型: %s", scriptType)
+	}
+}
+
+type luaEngineWrapper struct {
+	engine        *lua_engine.LuaEngine
+	scriptContent string
+}
+
+func (w *luaEngineWrapper) Start() error {
+	return w.engine.ExecuteString(w.scriptContent)
+}
+
+func (w *luaEngineWrapper) Pause() {
+	w.engine.Pause()
+}
+
+func (w *luaEngineWrapper) Resume() {
+	w.engine.Resume()
+}
+
+func (w *luaEngineWrapper) Stop() {
+	w.engine.Stop()
+}
+
+func (w *luaEngineWrapper) Close() {
+	w.engine.Close()
+}
+
+type jsEngineWrapper struct {
+	engine        *js_engine.JSEngine
+	scriptContent string
+}
+
+func (w *jsEngineWrapper) Start() error {
+	return w.engine.ExecuteString(w.scriptContent)
+}
+
+func (w *jsEngineWrapper) Pause() {
+	w.engine.Pause()
+}
+
+func (w *jsEngineWrapper) Resume() {
+	w.engine.Resume()
+}
+
+func (w *jsEngineWrapper) Stop() {
+	w.engine.Stop()
+}
+
+func (w *jsEngineWrapper) Close() {
+	w.engine.Close()
+}
+
+func (s *TCPServer) Shutdown(ctx context.Context) error {
+	log.Printf("正在关闭 TCP Socket 服务器...")
+
+	s.cancel()
+
+	if s.listener != nil {
+		s.listener.Close()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+// ========================================
+// 主函数
+// ========================================
+
+func main() {
+	addr := ":8080"
+	if port := os.Getenv("PORT"); port != "" {
+		addr = ":" + port
+	}
+
+	server := NewTCPServer(addr)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	if runtime.GOOS != "windows" {
+		signal.Notify(sigChan, syscall.SIGTERM)
+	}
+
+	go func() {
+		sig := <-sigChan
+		log.Printf("收到信号 %v，正在关闭服务器...", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		server.Shutdown(ctx)
+	}()
+
+	if err := server.Start(); err != nil {
+		log.Fatalf("服务器启动失败: %v", err)
+	}
+
+	<-server.ctx.Done()
+}

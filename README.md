@@ -94,6 +94,134 @@ go build -o AutoGoScriptEngineDebugger .
 ./AutoGoScriptEngineDebugger
 ```
 
+## 🔧 环境变量配置
+
+配置环境变量后，可以在任意目录下直接运行 `AutoGoScriptEngineDebugger` 命令。
+
+### Windows 配置
+
+#### 方法一：通过系统设置（推荐）
+
+1. 右键点击"此电脑"或"我的电脑"，选择"属性"
+2. 点击"高级系统设置"
+3. 点击"环境变量"按钮
+4. 在"系统变量"或"用户变量"中找到 `Path` 变量，点击"编辑"
+5. 点击"新建"，添加程序所在目录的完整路径，例如：
+   ```
+   C:\Tools\AutoGoScriptEngineDebugger
+   ```
+6. 点击"确定"保存所有窗口
+7. **重新打开命令提示符或 PowerShell** 使配置生效
+
+#### 方法二：通过命令行（PowerShell）
+
+```powershell
+# 为当前用户添加环境变量（推荐）
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Tools\AutoGoScriptEngineDebugger", "User")
+
+# 或者临时添加（仅当前会话有效）
+$env:Path += ";C:\Tools\AutoGoScriptEngineDebugger"
+```
+
+#### 验证配置
+
+```powershell
+# 重新打开终端后执行
+AutoGoScriptEngineDebugger.exe --help
+```
+
+### macOS 配置
+
+首先，将程序移动到合适的目录（例如 `/usr/local/bin` 或自定义目录）：
+
+```bash
+# 创建目录（如果不存在）
+sudo mkdir -p /usr/local/bin
+
+# 移动程序（根据你的芯片选择对应的文件）
+# M1/M2/M3 芯片
+sudo mv AutoGoScriptEngineDebuggerArm /usr/local/bin/AutoGoScriptEngineDebugger
+
+# Intel 芯片
+sudo mv AutoGoScriptEngineDebuggerAmd /usr/local/bin/AutoGoScriptEngineDebugger
+
+# 添加执行权限
+sudo chmod +x /usr/local/bin/AutoGoScriptEngineDebugger
+```
+
+#### 方法一：添加到 /usr/local/bin（推荐）
+
+如果按照上面的步骤将程序移动到 `/usr/local/bin`，通常无需额外配置，因为该目录已在 PATH 中。
+
+验证：
+```bash
+AutoGoScriptEngineDebugger --help
+```
+
+#### 方法二：自定义目录 + 配置 PATH
+
+如果程序放在自定义目录（如 `~/tools/AutoGoScriptEngineDebugger`），需要配置 shell：
+
+**Zsh（macOS 默认，Catalina 及以后版本）：**
+
+```bash
+# 编辑配置文件
+nano ~/.zshrc
+
+# 在文件末尾添加以下内容（替换为你的实际路径）
+export PATH="$HOME/tools/AutoGoScriptEngineDebugger:$PATH"
+
+# 保存后重新加载配置
+source ~/.zshrc
+```
+
+**Bash（旧版 macOS 默认）：**
+
+```bash
+# 编辑配置文件
+nano ~/.bash_profile
+
+# 在文件末尾添加以下内容（替换为你的实际路径）
+export PATH="$HOME/tools/AutoGoScriptEngineDebugger:$PATH"
+
+# 保存后重新加载配置
+source ~/.bash_profile
+```
+
+#### 验证配置
+
+```bash
+# 检查是否配置成功
+which AutoGoScriptEngineDebugger
+
+# 运行程序
+AutoGoScriptEngineDebugger --help
+```
+
+### 常见问题
+
+**Q: 配置后命令仍然找不到？**
+
+- Windows: 确保重新打开了终端窗口
+- macOS: 确保执行了 `source` 命令或重新打开了终端
+
+**Q: macOS 提示"无法打开，因为无法验证开发者"？**
+
+```bash
+# 移除隔离属性
+sudo xattr -r -d com.apple.quarantine /usr/local/bin/AutoGoScriptEngineDebugger
+```
+
+**Q: 如何查看当前的 PATH 环境变量？**
+
+```bash
+# Windows (PowerShell)
+$env:Path -split ';'
+
+# macOS / Linux
+echo $PATH | tr ':' '\n'
+```
+
 ## 🎯 快速开始
 
 ### 1. 启动程序
@@ -180,7 +308,7 @@ autogo_scriptengine_debugger/
 │   ├── project.go       # 项目操作
 │   ├── embed_files.go   # 嵌入模板文件
 │   ├── scripts/         # 示例脚本模板
-│   └── main.go.code     # main.go 模板
+│   └── debugger.go.code # debugger.go 模板
 ├── script/              # 脚本操作
 │   └── script.go        # 部署脚本
 ├── tui/                 # TUI 界面

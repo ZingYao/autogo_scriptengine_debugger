@@ -13,7 +13,7 @@
 - `main.js` - JavaScript 示例脚本
 - `module.js` - JavaScript 模块示例
 
-### main.go.code
+### debugger.go.code
 项目的主程序模板，会在初始化时重命名为 `main.go` 并释放到项目根目录。
 
 这个文件包含：
@@ -35,4 +35,4 @@
 
 - 这些文件通过 Go embed 嵌入到编译后的二进制文件中
 - 修改模板后需要重新编译才能生效
-- `main.go.code` 是合法的 Go 代码文件，可以直接用 Go 工具验证语法
+- `debugger.go.code` 是合法的 Go 代码文件，可以直接用 Go 工具验证语法

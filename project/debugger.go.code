@@ -1,0 +1,2165 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"math"
+	"net"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+	"unsafe"
+
+	"github.com/ZingYao/autogo_scriptengine/js_engine"
+	js_autogo "github.com/ZingYao/autogo_scriptengine/js_engine/define/autogo/all_models"
+	js_model "github.com/ZingYao/autogo_scriptengine/js_engine/model"
+	"github.com/ZingYao/autogo_scriptengine/lua_engine"
+	lua_autogo "github.com/ZingYao/autogo_scriptengine/lua_engine/define/autogo/all_models"
+	lua_model "github.com/ZingYao/autogo_scriptengine/lua_engine/model"
+	"github.com/dop251/goja"
+	lua "github.com/yuin/gopher-lua"
+)
+
+// ========================================
+// 全局调试模式
+// ========================================
+
+var globalDebug bool
+var globalDebugMu sync.RWMutex
+
+// setGlobalDebug 设置全局调试模式
+func setGlobalDebug(debug bool) {
+	globalDebugMu.Lock()
+	defer globalDebugMu.Unlock()
+	globalDebug = debug
+}
+
+// isGlobalDebug 获取全局调试模式
+func isGlobalDebug() bool {
+	globalDebugMu.RLock()
+	defer globalDebugMu.RUnlock()
+	return globalDebug
+}
+
+// debugLog 调试日志（仅在调试模式下打印）
+func debugLog(format string, args ...interface{}) {
+	if isGlobalDebug() {
+		log.Printf(format, args...)
+	}
+}
+
+// debugLogf 调试日志（使用 fmt.Printf，仅在调试模式下打印）
+func debugLogf(format string, args ...interface{}) {
+	if isGlobalDebug() {
+		fmt.Printf(format, args...)
+	}
+}
+
+// ========================================
+// 虚拟文件系统
+// ========================================
+
+// VirtualFile 虚拟文件
+type VirtualFile struct {
+	name    string
+	content []byte
+	offset  int // 读取偏移量
+}
+
+func (f *VirtualFile) Name() string       { return f.name }
+func (f *VirtualFile) Size() int64        { return int64(len(f.content)) }
+func (f *VirtualFile) Mode() fs.FileMode  { return 0444 }
+func (f *VirtualFile) ModTime() time.Time { return time.Now() }
+func (f *VirtualFile) IsDir() bool        { return false }
+func (f *VirtualFile) Sys() interface{}   { return nil }
+
+func (f *VirtualFile) Stat() (fs.FileInfo, error) {
+	return f, nil
+}
+
+func (f *VirtualFile) Read(b []byte) (int, error) {
+	if f.offset >= len(f.content) {
+		return 0, io.EOF
+	}
+	n := copy(b, f.content[f.offset:])
+	f.offset += n
+	return n, nil
+}
+
+func (f *VirtualFile) Close() error {
+	return nil
+}
+
+// ========================================
+// JSExampleModule - JavaScript 示例模块
+// ========================================
+// 这个模块展示了如何实现自己的 JavaScript 模块
+// 用户可以参考这个实现来创建自己的模块
+
+// JSExampleModule JavaScript 示例模块结构体
+type JSExampleModule struct{}
+
+// Name 返回模块名称
+func (m *JSExampleModule) Name() string {
+	return "example"
+}
+
+// IsAvailable 返回模块是否可用
+func (m *JSExampleModule) IsAvailable() bool {
+	return true
+}
+
+// Register 向引擎注册方法
+func (m *JSExampleModule) Register(engine js_model.Engine) error {
+	vm := engine.GetVM()
+
+	// 创建 example 对象
+	exampleObj := vm.NewObject()
+
+	// 注册 hello 方法
+	// 用法: example.hello() 或 example.hello("name")
+	exampleObj.Set("hello", func(call goja.FunctionCall) goja.Value {
+		// 获取参数
+		if len(call.Arguments) > 0 && call.Arguments[0] != goja.Undefined() {
+			name := call.Arguments[0].String()
+			fmt.Printf("Hello, %s!\n", name)
+		} else {
+			// 无参数时输出 Hello, World!
+			fmt.Println("Hello, World!")
+		}
+
+		return goja.Undefined()
+	})
+
+	// 注册 add 方法 - 演示返回值
+	// 用法: const result = example.add(1, 2)
+	exampleObj.Set("add", func(call goja.FunctionCall) goja.Value {
+		a := call.Argument(0).ToInteger()
+		b := call.Argument(1).ToInteger()
+		result := a + b
+		return vm.ToValue(result)
+	})
+
+	// 注册 getVersion 方法 - 演示返回字符串
+	// 用法: const version = example.getVersion()
+	exampleObj.Set("getVersion", func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue("1.0.0")
+	})
+
+	// 注册 getInfo 方法 - 演示返回对象
+	// 用法: const info = example.getInfo()
+	exampleObj.Set("getInfo", func(call goja.FunctionCall) goja.Value {
+		info := vm.NewObject()
+		info.Set("name", "example-module")
+		info.Set("version", "1.0.0")
+		info.Set("author", "AutoGo")
+		return info
+	})
+
+	// 将 example 对象注册到全局
+	vm.Set("example", exampleObj)
+
+	return nil
+}
+
+// VirtualDir 虚拟目录
+type VirtualDir struct {
+	name    string
+	entries map[string]fs.DirEntry
+}
+
+func (d *VirtualDir) Name() string      { return d.name }
+func (d *VirtualDir) IsDir() bool       { return true }
+func (d *VirtualDir) Type() fs.FileMode { return fs.ModeDir }
+func (d *VirtualDir) Info() (fs.FileInfo, error) {
+	return &virtualDirInfo{name: d.name}, nil
+}
+
+func (d *VirtualDir) Stat() (fs.FileInfo, error) {
+	return &virtualDirInfo{name: d.name}, nil
+}
+
+func (d *VirtualDir) Read(b []byte) (int, error) {
+	return 0, nil
+}
+
+func (d *VirtualDir) Close() error {
+	return nil
+}
+
+type virtualDirInfo struct {
+	name string
+}
+
+func (i *virtualDirInfo) Name() string       { return i.name }
+func (i *virtualDirInfo) Size() int64        { return 0 }
+func (i *virtualDirInfo) Mode() fs.FileMode  { return fs.ModeDir }
+func (i *virtualDirInfo) ModTime() time.Time { return time.Now() }
+func (i *virtualDirInfo) IsDir() bool        { return true }
+func (i *virtualDirInfo) Sys() interface{}   { return nil }
+
+// VirtualFS 虚拟文件系统
+type VirtualFS struct {
+	mu      sync.RWMutex
+	files   map[string][]byte
+	dirs    map[string]map[string]bool
+	workDir string
+}
+
+// NewVirtualFS 创建虚拟文件系统
+func NewVirtualFS() *VirtualFS {
+	return &VirtualFS{
+		files: make(map[string][]byte),
+		dirs:  make(map[string]map[string]bool),
+	}
+}
+
+// SetWorkDir 设置工作目录
+func (vfs *VirtualFS) SetWorkDir(dir string) {
+	vfs.workDir = dir
+}
+
+// GetWorkDir 获取工作目录
+func (vfs *VirtualFS) GetWorkDir() string {
+	return vfs.workDir
+}
+
+// WriteFile 写入文件到虚拟文件系统
+func (vfs *VirtualFS) WriteFile(path string, content []byte) {
+	vfs.mu.Lock()
+	defer vfs.mu.Unlock()
+
+	path = normalizePath(path)
+	vfs.files[path] = content
+
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "/" {
+		vfs.ensureDir(dir)
+	}
+}
+
+// ReadFile 从虚拟文件系统读取文件
+func (vfs *VirtualFS) ReadFile(path string) ([]byte, error) {
+	vfs.mu.RLock()
+	defer vfs.mu.RUnlock()
+
+	path = normalizePath(path)
+	content, ok := vfs.files[path]
+	if !ok {
+		return nil, fmt.Errorf("文件不存在: %s", path)
+	}
+
+	return content, nil
+}
+
+// FileExists 检查文件是否存在
+func (vfs *VirtualFS) FileExists(path string) bool {
+	vfs.mu.RLock()
+	defer vfs.mu.RUnlock()
+
+	originalPath := path
+	path = normalizePath(path)
+	_, ok := vfs.files[path]
+	debugLog("[DEBUG FileExists] 原始路径: '%s', 标准化后: '%s', 存在: %v", originalPath, path, ok)
+	return ok
+}
+
+// ListFiles 列出所有文件
+func (vfs *VirtualFS) ListFiles() []string {
+	vfs.mu.RLock()
+	defer vfs.mu.RUnlock()
+
+	files := make([]string, 0, len(vfs.files))
+	for path := range vfs.files {
+		files = append(files, path)
+	}
+	return files
+}
+
+// Clear 清空虚拟文件系统
+func (vfs *VirtualFS) Clear() {
+	vfs.mu.Lock()
+	defer vfs.mu.Unlock()
+
+	vfs.files = make(map[string][]byte)
+	vfs.dirs = make(map[string]map[string]bool)
+	vfs.workDir = ""
+}
+
+// ensureDir 确保目录存在
+func (vfs *VirtualFS) ensureDir(dir string) {
+	dir = normalizePath(dir)
+	if _, ok := vfs.dirs[dir]; !ok {
+		vfs.dirs[dir] = make(map[string]bool)
+	}
+
+	parent := filepath.Dir(dir)
+	if parent != "." && parent != "/" && parent != dir {
+		vfs.ensureDir(parent)
+	}
+}
+
+// normalizePath 规范化路径
+func normalizePath(path string) string {
+	path = strings.TrimPrefix(path, "./")
+	path = strings.TrimPrefix(path, "/")
+	return path
+}
+
+// Open 实现 fs.FS 接口
+func (vfs *VirtualFS) Open(name string) (fs.File, error) {
+	vfs.mu.RLock()
+	defer vfs.mu.RUnlock()
+
+	name = normalizePath(name)
+
+	// 检查是否是目录
+	if _, ok := vfs.dirs[name]; ok {
+		return &VirtualDir{name: name, entries: make(map[string]fs.DirEntry)}, nil
+	}
+
+	// 检查是否是文件
+	content, ok := vfs.files[name]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+
+	return &VirtualFile{name: name, content: content}, nil
+}
+
+// ========================================
+// 脚本类型定义
+// ========================================
+
+type ScriptType string
+
+const (
+	ScriptTypeLua        ScriptType = "lua"
+	ScriptTypeJavaScript ScriptType = "javascript"
+)
+
+type CodeStyle string
+
+const (
+	CodeStyleAutogo    CodeStyle = "autogo"
+	CodeStyleLrappsoft CodeStyle = "lrappsoft"
+	CodeStyleNodejs    CodeStyle = "nodejs"
+)
+
+type OperationType string
+
+const (
+	OpRun      OperationType = "run"
+	OpStop     OperationType = "stop"
+	OpPause    OperationType = "pause"
+	OpResume   OperationType = "resume"
+	OpStatus   OperationType = "status"
+	OpGetError OperationType = "get_error"
+)
+
+type ScriptStatus string
+
+const (
+	StatusIdle    ScriptStatus = "idle"
+	StatusRunning ScriptStatus = "running"
+	StatusPaused  ScriptStatus = "paused"
+	StatusStopped ScriptStatus = "stopped"
+	StatusError   ScriptStatus = "error"
+)
+
+// ========================================
+// 消息结构（所有配置通过 Socket 动态传输）
+// ========================================
+
+// RequestMessage 请求消息
+type RequestMessage struct {
+	// 基本操作
+	Operation  OperationType          `json:"operation"`
+	ScriptID   string                 `json:"script_id"`
+	Parameters map[string]interface{} `json:"parameters"`
+
+	// 脚本配置（通过 Socket 动态传输）
+	ScriptType ScriptType `json:"script_type"` // 脚本类型: lua, javascript
+	CodeStyle  CodeStyle  `json:"code_style"`  // 代码风格: autogo, lrappsoft, nodejs
+	ScriptPath string     `json:"script_path"` // 脚本路径
+	WorkDir    string     `json:"work_dir"`    // 工作目录
+
+	// 调试配置
+	Debug bool `json:"debug"` // 是否启用调试模式（打印详细日志）
+
+	// 安全配置（通过 Socket 动态传输）
+	DebugObfuscate bool   `json:"debug_obfuscate"`          // 是否混淆代码
+	DebugBytecode  bool   `json:"debug_bytecode"`           // 是否编译字节码（仅 Lua）
+	DebugEncrypt   bool   `json:"debug_encrypt"`            // 是否加密
+	EncryptionKey  string `json:"encryption_key,omitempty"` // 加密密钥（Base64 编码）
+}
+
+// ResponseMessage 响应消息
+type ResponseMessage struct {
+	Success   bool                   `json:"success"`
+	Status    ScriptStatus           `json:"status"`
+	Error     string                 `json:"error"`
+	Message   string                 `json:"message"`
+	Data      map[string]interface{} `json:"data"`
+	ScriptID  string                 `json:"script_id"`
+	Timestamp int64                  `json:"timestamp"`
+}
+
+// ========================================
+// 脚本执行管理
+// ========================================
+
+// ScriptExecution 脚本执行实例
+type ScriptExecution struct {
+	ScriptID  string
+	Status    ScriptStatus
+	Error     error
+	StartTime time.Time
+	EndTime   time.Time
+	Engine    interface {
+		Start() error
+		Pause()
+		Resume()
+		Stop()
+		Close()
+	}
+	ScriptType ScriptType
+	CodeStyle  CodeStyle
+	ScriptPath string
+	WorkDir    string
+
+	// 安全配置
+	DebugObfuscate bool
+	DebugBytecode  bool
+	DebugEncrypt   bool
+	EncryptionKey  string
+}
+
+// ScriptManager 脚本管理器
+type ScriptManager struct {
+	mu         sync.RWMutex
+	executions map[string]*ScriptExecution
+}
+
+func NewScriptManager() *ScriptManager {
+	return &ScriptManager{
+		executions: make(map[string]*ScriptExecution),
+	}
+}
+
+func (sm *ScriptManager) Add(scriptID string, execution *ScriptExecution) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.executions[scriptID] = execution
+}
+
+func (sm *ScriptManager) Get(scriptID string) (*ScriptExecution, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	exec, ok := sm.executions[scriptID]
+	return exec, ok
+}
+
+func (sm *ScriptManager) UpdateStatus(scriptID string, status ScriptStatus) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if exec, ok := sm.executions[scriptID]; ok {
+		exec.Status = status
+		if status == StatusStopped || status == StatusError {
+			exec.EndTime = time.Now()
+		}
+	}
+}
+
+func (sm *ScriptManager) SetError(scriptID string, err error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if exec, ok := sm.executions[scriptID]; ok {
+		exec.Error = err
+		exec.Status = StatusError
+		exec.EndTime = time.Now()
+	}
+}
+
+func (sm *ScriptManager) Remove(scriptID string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	delete(sm.executions, scriptID)
+}
+
+// ========================================
+// AES 解密函数
+// ========================================
+
+// decryptAES 使用 AES-GCM 解密数据
+func decryptAES(encryptedBase64 string, keyBase64 string) ([]byte, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(encryptedBase64)
+	if err != nil {
+		return nil, fmt.Errorf("Base64 解码加密数据失败: %w", err)
+	}
+
+	key, err := base64.StdEncoding.DecodeString(keyBase64)
+	if err != nil {
+		return nil, fmt.Errorf("Base64 解码密钥失败: %w", err)
+	}
+
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return nil, fmt.Errorf("密钥长度无效: %d (需要 16、24 或 32 字节)", len(key))
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("创建 AES 块失败: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("创建 GCM 模式失败: %w", err)
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("密文数据太短: %d < %d", len(ciphertext), nonceSize)
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("解密失败: %w", err)
+	}
+
+	return plaintext, nil
+}
+
+// base64Decode Base64 解码
+func base64Decode(data string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(data)
+}
+
+// xorDecrypt XOR 解密
+func xorDecrypt(data []byte, key []byte) []byte {
+	result := make([]byte, len(data))
+	keyLen := len(key)
+	for i, c := range data {
+		result[i] = c ^ key[i%keyLen]
+	}
+	return result
+}
+
+// ========================================
+// 脚本加载器
+// ========================================
+
+// ScriptLoader 脚本加载器
+type ScriptLoader struct {
+	vfs           *VirtualFS
+	encryptKey    string
+	debugEncrypt  bool
+	debugBytecode bool
+}
+
+// NewScriptLoader 创建脚本加载器
+func NewScriptLoader(vfs *VirtualFS, encryptKey string, debugEncrypt, debugBytecode bool) *ScriptLoader {
+	return &ScriptLoader{
+		vfs:           vfs,
+		encryptKey:    encryptKey,
+		debugEncrypt:  debugEncrypt,
+		debugBytecode: debugBytecode,
+	}
+}
+
+// LoadAndDecryptScripts 加载并解密脚本目录中的所有脚本
+func (l *ScriptLoader) LoadAndDecryptScripts(scriptDir string) error {
+	if _, err := os.Stat(scriptDir); os.IsNotExist(err) {
+		return fmt.Errorf("脚本目录不存在: %s", scriptDir)
+	}
+
+	l.vfs.SetWorkDir(scriptDir)
+
+	err := filepath.WalkDir(scriptDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(scriptDir, path)
+		if err != nil {
+			return fmt.Errorf("计算相对路径失败: %w", err)
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("读取文件失败: %w", err)
+		}
+
+		ext := strings.ToLower(filepath.Ext(path))
+		isScript := ext == ".lua" || ext == ".js"
+
+		if isScript && l.debugEncrypt {
+			decrypted, err := l.decryptScript(content)
+			if err != nil {
+				log.Printf("[警告] 解密脚本失败 %s: %v, 使用原始内容", relPath, err)
+				l.vfs.WriteFile(relPath, content)
+			} else {
+				l.vfs.WriteFile(relPath, decrypted)
+			}
+		} else {
+			l.vfs.WriteFile(relPath, content)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("遍历脚本目录失败: %w", err)
+	}
+
+	return nil
+}
+
+// decryptScript 解密脚本内容
+func (l *ScriptLoader) decryptScript(content []byte) ([]byte, error) {
+	if l.encryptKey == "" {
+		return nil, fmt.Errorf("缺少解密密钥")
+	}
+
+	decrypted, err := decryptAES(string(content), l.encryptKey)
+	if err == nil {
+		return decrypted, nil
+	}
+
+	keyBytes, err := base64Decode(l.encryptKey)
+	if err != nil {
+		return nil, fmt.Errorf("解码密钥失败: %w", err)
+	}
+
+	decodedContent, err := base64Decode(string(content))
+	if err != nil {
+		return nil, fmt.Errorf("Base64 解码内容失败: %w", err)
+	}
+
+	decrypted = xorDecrypt(decodedContent, keyBytes)
+	return decrypted, nil
+}
+
+// GetScriptContent 从虚拟文件系统获取脚本内容
+func (l *ScriptLoader) GetScriptContent(scriptPath string) ([]byte, error) {
+	if l.vfs.GetWorkDir() != "" {
+		relPath, err := filepath.Rel(l.vfs.GetWorkDir(), scriptPath)
+		if err == nil {
+			scriptPath = relPath
+		}
+	}
+
+	return l.vfs.ReadFile(scriptPath)
+}
+
+// ========================================
+// TCP 服务器
+// ========================================
+
+// TCPServer TCP Socket 服务器
+type TCPServer struct {
+	manager  *ScriptManager
+	listener net.Listener
+	addr     string
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	vfs      *VirtualFS
+	loader   *ScriptLoader
+	debug    bool // 调试模式
+}
+
+// NewTCPServer 创建 TCP 服务器
+func NewTCPServer(addr string) *TCPServer {
+	ctx, cancel := context.WithCancel(context.Background())
+	vfs := NewVirtualFS()
+
+	return &TCPServer{
+		manager: NewScriptManager(),
+		addr:    addr,
+		ctx:     ctx,
+		cancel:  cancel,
+		vfs:     vfs,
+	}
+}
+
+// SetDebug 设置调试模式
+func (s *TCPServer) SetDebug(debug bool) {
+	s.debug = debug
+}
+
+// debugLog 调试日志（仅在调试模式下打印）
+func (s *TCPServer) debugLog(format string, args ...interface{}) {
+	if s.debug {
+		log.Printf(format, args...)
+	}
+}
+
+// debugLogf 调试日志（使用 fmt.Printf，仅在调试模式下打印）
+func (s *TCPServer) debugLogf(format string, args ...interface{}) {
+	if s.debug {
+		fmt.Printf(format, args...)
+	}
+}
+
+func (s *TCPServer) Start() error {
+	listener, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("监听失败: %w", err)
+	}
+	s.listener = listener
+
+	log.Printf("TCP Socket 服务器启动: %s", s.addr)
+
+	s.wg.Add(1)
+	go s.acceptLoop()
+
+	return nil
+}
+
+func (s *TCPServer) acceptLoop() {
+	defer s.wg.Done()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+			conn, err := s.listener.Accept()
+			if err != nil {
+				select {
+				case <-s.ctx.Done():
+					return
+				default:
+					log.Printf("接受连接失败: %v", err)
+					continue
+				}
+			}
+
+			s.wg.Add(1)
+			go s.handleConnection(conn)
+		}
+	}
+}
+
+func (s *TCPServer) handleConnection(conn net.Conn) {
+	defer s.wg.Done()
+	defer conn.Close()
+
+	// 全局 panic 捕获，防止任何 panic 导致程序崩溃
+	defer func() {
+		if r := recover(); r != nil {
+			rawMsg := fmt.Sprintf("%v", r)
+			cleanMsg := sanitizeErrorMessage(rawMsg)
+			log.Printf("[PANIC 捕获] 连接处理异常: %s", cleanMsg)
+			// 尝试发送错误响应
+			s.sendResponse(conn, ResponseMessage{
+				Success:   false,
+				Error:     fmt.Sprintf("服务器内部错误: %s", cleanMsg),
+				Timestamp: time.Now().Unix(),
+			})
+		}
+	}()
+
+	remoteAddr := conn.RemoteAddr().String()
+	log.Printf("新连接: %s", remoteAddr)
+
+	conn.SetDeadline(time.Time{})
+
+	reader := bufio.NewReader(conn)
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err.Error() != "EOF" {
+					log.Printf("读取连接 %s 失败: %v", remoteAddr, err)
+				}
+				return
+			}
+
+			line = line[:len(line)-1]
+			if line == "" {
+				continue
+			}
+
+			var req RequestMessage
+			if err := json.Unmarshal([]byte(line), &req); err != nil {
+				s.sendResponse(conn, ResponseMessage{
+					Success:   false,
+					Error:     "解析请求失败: " + err.Error(),
+					Timestamp: time.Now().Unix(),
+				})
+				continue
+			}
+
+			resp := s.handleRequest(req)
+			s.sendResponse(conn, resp)
+		}
+	}
+}
+
+func (s *TCPServer) handleRequest(req RequestMessage) (resp ResponseMessage) {
+	// 捕获 handleRequest 内部的任何 panic
+	defer func() {
+		if r := recover(); r != nil {
+			rawMsg := fmt.Sprintf("%v", r)
+			cleanMsg := sanitizeErrorMessage(rawMsg)
+			log.Printf("[PANIC 捕获] 请求处理异常: %s", cleanMsg)
+			resp = ResponseMessage{
+				Success:   false,
+				Error:     fmt.Sprintf("请求处理异常: %s", cleanMsg),
+				Timestamp: time.Now().Unix(),
+			}
+		}
+	}()
+
+	switch req.Operation {
+	case OpRun:
+		return s.handleRun(req)
+	case OpStop:
+		return s.handleStop(req)
+	case OpPause:
+		return s.handlePause(req)
+	case OpResume:
+		return s.handleResume(req)
+	case OpStatus:
+		return s.handleStatus(req)
+	case OpGetError:
+		return s.handleError(req)
+	default:
+		return ResponseMessage{
+			Success:   false,
+			Error:     "未知操作: " + string(req.Operation),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+}
+
+func (s *TCPServer) handleRun(req RequestMessage) (resp ResponseMessage) {
+	// 设置全局调试模式
+	setGlobalDebug(req.Debug)
+
+	// 捕获整个 handleRun 中的 panic，避免输出到 stdout/stderr
+	defer func() {
+		if r := recover(); r != nil {
+			rawMsg := fmt.Sprintf("%v", r)
+			cleanMsg := sanitizeErrorMessage(rawMsg)
+			resp = ResponseMessage{
+				Success:   false,
+				Error:     fmt.Sprintf("运行请求处理异常: %s", cleanMsg),
+				Timestamp: time.Now().Unix(),
+			}
+		}
+	}()
+
+	if req.ScriptPath == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "脚本路径不能为空",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	absPath, err := filepath.Abs(req.ScriptPath)
+	if err != nil {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "获取绝对路径失败: " + err.Error(),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	workDir := req.WorkDir
+	if workDir == "" {
+		workDir = filepath.Dir(absPath)
+	} else {
+		if !filepath.IsAbs(workDir) {
+			absWorkDir, err := filepath.Abs(workDir)
+			if err != nil {
+				return ResponseMessage{
+					Success:   false,
+					Error:     "获取工作目录绝对路径失败: " + err.Error(),
+					Timestamp: time.Now().Unix(),
+				}
+			}
+			workDir = absWorkDir
+		}
+	}
+
+	// 清空虚拟文件系统（每次运行前清空）
+	s.vfs.Clear()
+
+	// 初始化脚本加载器（使用从请求中获取的配置）
+	s.loader = NewScriptLoader(s.vfs, req.EncryptionKey, req.DebugEncrypt, req.DebugBytecode)
+
+	// 加载并解密脚本目录中的所有脚本
+	if err := s.loader.LoadAndDecryptScripts(workDir); err != nil {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "加载脚本目录失败: " + err.Error(),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	// 从虚拟文件系统获取主脚本内容
+	scriptContent, err := s.loader.GetScriptContent(absPath)
+	if err != nil {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "获取脚本内容失败: " + err.Error(),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	// 计算主脚本相对于工作目录的相对路径（用于设置 __dirname）
+	scriptRelPath, err := filepath.Rel(workDir, absPath)
+	if err != nil {
+		scriptRelPath = filepath.Base(absPath)
+	}
+	debugLogf("[DEBUG] scriptRelPath: '%s', workDir: '%s', absPath: '%s'\n", scriptRelPath, workDir, absPath)
+
+	// 判断是否是字节码模式
+	// 使用请求中的标志，而不是检测文件内容（因为加密后的字节码没有标准签名）
+	isBytecode := req.DebugBytecode && req.ScriptType == ScriptTypeLua
+
+	// 创建引擎（使用从请求中获取的配置）
+	engine, err := s.createEngine(
+		req.ScriptType,
+		req.CodeStyle,
+		string(scriptContent),
+		workDir,
+		isBytecode,
+		scriptRelPath,
+	)
+	if err != nil {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "创建引擎失败: " + err.Error(),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	scriptID := absPath
+	execution := &ScriptExecution{
+		ScriptID:   scriptID,
+		Status:     StatusRunning,
+		StartTime:  time.Now(),
+		Engine:     engine,
+		ScriptType: req.ScriptType,
+		CodeStyle:  req.CodeStyle,
+		ScriptPath: absPath,
+		WorkDir:    workDir,
+
+		DebugObfuscate: req.DebugObfuscate,
+		DebugBytecode:  req.DebugBytecode,
+		DebugEncrypt:   req.DebugEncrypt,
+		EncryptionKey:  req.EncryptionKey,
+	}
+
+	s.manager.Add(scriptID, execution)
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				rawMsg := fmt.Sprintf("%v", r)
+				cleanMsg := sanitizeErrorMessage(rawMsg)
+				errMsg := fmt.Sprintf("脚本执行异常: %s", cleanMsg)
+				s.manager.SetError(scriptID, fmt.Errorf("%s", errMsg))
+			}
+			engine.Close()
+		}()
+
+		// 打印虚拟文件系统中的文件列表
+		files := s.vfs.ListFiles()
+		debugLog("虚拟文件系统中的文件列表 (共 %d 个文件):", len(files))
+		for _, f := range files {
+			debugLog("  - %s", f)
+		}
+
+		if err := engine.Start(); err != nil {
+			cleanErr := sanitizeErrorMessage(err.Error())
+			s.manager.SetError(scriptID, fmt.Errorf("脚本执行失败: %s", cleanErr))
+		} else {
+			s.manager.UpdateStatus(scriptID, StatusStopped)
+		}
+	}()
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    StatusRunning,
+		Message:   "脚本已启动",
+		ScriptID:  scriptID,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+// isLuaBytecode 检测是否是 Lua 字节码
+func isLuaBytecode(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	return data[0] == 0x1b && data[1] == 'L' && data[2] == 'u' && data[3] == 'a'
+}
+
+// deserializeBytecode 反序列化字节码为 FunctionProto
+// 这是 obfuscator/lua/compiler.go 中 serializeProto 的逆操作
+func deserializeBytecode(data []byte) (*lua.FunctionProto, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("字节码数据太短")
+	}
+
+	buf := bytes.NewReader(data)
+
+	// 读取魔数
+	magic := make([]byte, 4)
+	if _, err := buf.Read(magic); err != nil {
+		return nil, fmt.Errorf("读取魔数失败: %v", err)
+	}
+	if string(magic) != "\x1bLua" {
+		return nil, fmt.Errorf("无效的字节码魔数: %s", string(magic))
+	}
+
+	// 读取版本号
+	version, err := buf.ReadByte()
+	if err != nil {
+		return nil, fmt.Errorf("读取版本号失败: %v", err)
+	}
+	if version != 0x51 {
+		return nil, fmt.Errorf("不支持的字节码版本: 0x%02x", version)
+	}
+
+	// 读取格式版本
+	format, err := buf.ReadByte()
+	if err != nil {
+		return nil, fmt.Errorf("读取格式版本失败: %v", err)
+	}
+	_ = format // 忽略格式版本
+
+	// 读取源码名
+	sourceName, err := readLengthPrefixedString(buf)
+	if err != nil {
+		return nil, fmt.Errorf("读取源码名失败: %v", err)
+	}
+
+	// 读取行定义
+	lineDefined, err := readUint32(buf)
+	if err != nil {
+		return nil, fmt.Errorf("读取行定义失败: %v", err)
+	}
+	lastLineDefined, err := readUint32(buf)
+	if err != nil {
+		return nil, fmt.Errorf("读取最后行定义失败: %v", err)
+	}
+
+	// 读取 upvalue 数量
+	numUpvalues, err := buf.ReadByte()
+	if err != nil {
+		return nil, fmt.Errorf("读取 upvalue 数量失败: %v", err)
+	}
+
+	// 读取参数数量
+	numParams, err := buf.ReadByte()
+	if err != nil {
+		return nil, fmt.Errorf("读取参数数量失败: %v", err)
+	}
+
+	// 读取是否可变参数
+	isVarArg, err := buf.ReadByte()
+	if err != nil {
+		return nil, fmt.Errorf("读取可变参数标志失败: %v", err)
+	}
+
+	// 读取寄存器数量
+	numUsedRegisters, err := buf.ReadByte()
+	if err != nil {
+		return nil, fmt.Errorf("读取寄存器数量失败: %v", err)
+	}
+
+	// 读取代码
+	codeLen, err := readUint32(buf)
+	if err != nil {
+		return nil, fmt.Errorf("读取代码长度失败: %v", err)
+	}
+	code := make([]uint32, codeLen)
+	for i := uint32(0); i < codeLen; i++ {
+		instr, err := readUint32(buf)
+		if err != nil {
+			return nil, fmt.Errorf("读取指令失败: %v", err)
+		}
+		code[i] = instr
+	}
+
+	// 读取常量
+	constantsLen, err := readUint32(buf)
+	if err != nil {
+		return nil, fmt.Errorf("读取常量长度失败: %v", err)
+	}
+	constants := make([]lua.LValue, constantsLen)
+	for i := uint32(0); i < constantsLen; i++ {
+		constant, err := readConstant(buf)
+		if err != nil {
+			return nil, fmt.Errorf("读取常量失败: %v", err)
+		}
+		constants[i] = constant
+	}
+
+	// 读取函数原型
+	protosLen, err := readUint32(buf)
+	if err != nil {
+		return nil, fmt.Errorf("读取函数原型长度失败: %v", err)
+	}
+	protos := make([]*lua.FunctionProto, protosLen)
+	for i := uint32(0); i < protosLen; i++ {
+		protoLen, err := readUint32(buf)
+		if err != nil {
+			return nil, fmt.Errorf("读取函数原型大小失败: %v", err)
+		}
+		protoData := make([]byte, protoLen)
+		if _, err := buf.Read(protoData); err != nil {
+			return nil, fmt.Errorf("读取函数原型数据失败: %v", err)
+		}
+		proto, err := deserializeBytecode(protoData)
+		if err != nil {
+			return nil, fmt.Errorf("反序列化嵌套函数原型失败: %v", err)
+		}
+		protos[i] = proto
+	}
+
+	// 构建 FunctionProto
+	proto := &lua.FunctionProto{
+		SourceName:         sourceName,
+		LineDefined:        int(lineDefined),
+		LastLineDefined:    int(lastLineDefined),
+		NumUpvalues:        uint8(numUpvalues),
+		NumParameters:      uint8(numParams),
+		IsVarArg:           uint8(isVarArg),
+		NumUsedRegisters:   uint8(numUsedRegisters),
+		Code:               code,
+		Constants:          constants,
+		FunctionPrototypes: protos,
+		// 初始化调试信息字段，避免空指针
+		DbgSourcePositions: make([]int, len(code)),
+		DbgLocals:          make([]*lua.DbgLocalInfo, 0),
+		DbgCalls:           make([]lua.DbgCall, 0),
+		DbgUpvalues:        make([]string, 0),
+	}
+
+	// 使用反射设置私有字段 stringConstants
+	// stringConstants 必须与 Constants 一一对应
+	// 对于字符串常量，保存其值；对于非字符串常量，保存空字符串
+	stringConstants := make([]string, len(constants))
+	for i, c := range constants {
+		if str, ok := c.(lua.LString); ok {
+			stringConstants[i] = string(str)
+		} else {
+			stringConstants[i] = ""
+		}
+	}
+
+	protoValue := reflect.ValueOf(proto).Elem()
+	stringConstantsField := protoValue.FieldByName("stringConstants")
+	if stringConstantsField.IsValid() {
+		// 使用反射绕过私有字段限制
+		reflect.NewAt(stringConstantsField.Type(), unsafe.Pointer(stringConstantsField.UnsafeAddr())).
+			Elem().Set(reflect.ValueOf(stringConstants))
+	}
+
+	return proto, nil
+}
+
+// readLengthPrefixedString 读取带长度前缀的字符串
+func readLengthPrefixedString(buf *bytes.Reader) (string, error) {
+	length, err := readUint32(buf)
+	if err != nil {
+		return "", err
+	}
+	str := make([]byte, length)
+	if _, err := buf.Read(str); err != nil {
+		return "", err
+	}
+	return string(str), nil
+}
+
+// readUint32 读取 uint32 (小端序)
+func readUint32(buf *bytes.Reader) (uint32, error) {
+	b := make([]byte, 4)
+	if _, err := buf.Read(b); err != nil {
+		return 0, err
+	}
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24, nil
+}
+
+// readConstant 读取常量
+func readConstant(buf *bytes.Reader) (lua.LValue, error) {
+	typeByte, err := buf.ReadByte()
+	if err != nil {
+		return lua.LNil, err
+	}
+
+	switch typeByte {
+	case 0: // nil
+		return lua.LNil, nil
+	case 1: // bool
+		b, err := buf.ReadByte()
+		if err != nil {
+			return lua.LNil, err
+		}
+		return lua.LBool(b != 0), nil
+	case 2: // number
+		bits, err := readFloat64Bits(buf)
+		if err != nil {
+			return lua.LNil, err
+		}
+		return lua.LNumber(math.Float64frombits(bits)), nil
+	case 3: // string
+		str, err := readLengthPrefixedString(buf)
+		if err != nil {
+			return lua.LNil, err
+		}
+		return lua.LString(str), nil
+	case 4: // function
+		// 函数常量只保存源码名
+		_, err := readLengthPrefixedString(buf)
+		if err != nil {
+			return lua.LNil, err
+		}
+		return lua.LNil, nil // 函数常量在运行时解析
+	default:
+		return lua.LNil, fmt.Errorf("未知的常量类型: %d", typeByte)
+	}
+}
+
+// readFloat64Bits 读取 float64 的位表示 (小端序)
+func readFloat64Bits(buf *bytes.Reader) (uint64, error) {
+	b := make([]byte, 8)
+	if _, err := buf.Read(b); err != nil {
+		return 0, err
+	}
+	var bits uint64
+	for i := 0; i < 8; i++ {
+		bits |= uint64(b[i]) << (i * 8)
+	}
+	return bits, nil
+}
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (s *TCPServer) handleStop(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "脚本未运行",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	if exec.Status != StatusRunning && exec.Status != StatusPaused {
+		return ResponseMessage{
+			Success:   false,
+			Status:    exec.Status,
+			Error:     fmt.Sprintf("脚本状态为 %s，无法停止", exec.Status),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec.Engine.Stop()
+	s.manager.UpdateStatus(scriptID, StatusStopped)
+	log.Printf("脚本已停止: %s", scriptID)
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    StatusStopped,
+		Message:   "脚本已停止",
+		ScriptID:  scriptID,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handlePause(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "脚本未运行",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	if exec.Status != StatusRunning {
+		return ResponseMessage{
+			Success:   false,
+			Status:    exec.Status,
+			Error:     fmt.Sprintf("脚本状态为 %s，无法暂停", exec.Status),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec.Engine.Pause()
+	s.manager.UpdateStatus(scriptID, StatusPaused)
+	log.Printf("脚本已暂停: %s", scriptID)
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    StatusPaused,
+		Message:   "脚本已暂停",
+		ScriptID:  scriptID,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handleResume(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "脚本未运行",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	if exec.Status != StatusPaused {
+		return ResponseMessage{
+			Success:   false,
+			Status:    exec.Status,
+			Error:     fmt.Sprintf("脚本状态为 %s，无法恢复", exec.Status),
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec.Engine.Resume()
+	s.manager.UpdateStatus(scriptID, StatusRunning)
+	log.Printf("脚本已恢复: %s", scriptID)
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    StatusRunning,
+		Message:   "脚本已恢复",
+		ScriptID:  scriptID,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handleStatus(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   true,
+			Status:    StatusIdle,
+			Message:   "脚本未运行",
+			ScriptID:  scriptID,
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	data := map[string]interface{}{
+		"status":     string(exec.Status),
+		"start_time": exec.StartTime.Format(time.RFC3339),
+		"script_id":  exec.ScriptID,
+	}
+
+	if !exec.EndTime.IsZero() {
+		data["end_time"] = exec.EndTime.Format(time.RFC3339)
+		data["duration"] = exec.EndTime.Sub(exec.StartTime).String()
+	} else {
+		data["duration"] = time.Since(exec.StartTime).String()
+	}
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    exec.Status,
+		Message:   "状态查询成功",
+		ScriptID:  scriptID,
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) handleError(req RequestMessage) ResponseMessage {
+	scriptID := req.ScriptID
+	if scriptID == "" {
+		return ResponseMessage{
+			Success:   false,
+			Error:     "缺少 script_id 参数",
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	exec, ok := s.manager.Get(scriptID)
+	if !ok {
+		return ResponseMessage{
+			Success:   true,
+			Status:    StatusIdle,
+			Message:   "脚本未运行",
+			ScriptID:  scriptID,
+			Data:      map[string]interface{}{"error": "no error"},
+			Timestamp: time.Now().Unix(),
+		}
+	}
+
+	data := map[string]interface{}{
+		"status":     string(exec.Status),
+		"start_time": exec.StartTime.Format(time.RFC3339),
+	}
+
+	if exec.Error != nil {
+		data["error"] = exec.Error.Error()
+		data["has_error"] = true
+	} else {
+		data["error"] = "no error"
+		data["has_error"] = false
+	}
+
+	if !exec.EndTime.IsZero() {
+		data["end_time"] = exec.EndTime.Format(time.RFC3339)
+	}
+
+	return ResponseMessage{
+		Success:   true,
+		Status:    exec.Status,
+		Message:   "错误信息获取成功",
+		ScriptID:  scriptID,
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+	}
+}
+
+func (s *TCPServer) sendResponse(conn net.Conn, resp ResponseMessage) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("序列化响应失败: %v", err)
+		return
+	}
+
+	conn.Write(append(data, '\n'))
+}
+
+// ========================================
+// 引擎创建
+// ========================================
+
+func (s *TCPServer) createEngine(scriptType ScriptType, codeStyle CodeStyle, scriptContent string, workDir string, isBytecode bool, scriptRelPath string) (interface {
+	Start() error
+	Pause()
+	Resume()
+	Stop()
+	Close()
+}, error) {
+	switch scriptType {
+	case ScriptTypeLua:
+		config := lua_engine.DefaultConfig()
+		// 设置虚拟文件系统，让 require 从虚拟文件系统加载模块
+		config.FileSystem = s.vfs
+		// 设置搜索路径为 "." 表示从虚拟文件系统根目录搜索
+		config.SearchPaths = []string{"."}
+
+		engine := lua_engine.NewLuaEngine(&config)
+
+		switch codeStyle {
+		case CodeStyleAutogo:
+			engine.RegisterModule(lua_autogo.AllModules...)
+			// 注册自定义 example 模块（示例：告诉用户如何实现自己的模块
+			engine.RegisterModule(&ExampleModule{})
+		case CodeStyleLrappsoft:
+			log.Printf("[警告] Lrappsoft 风格暂未完全支持，使用 Autogo 风格")
+			engine.RegisterModule(lua_autogo.AllModules...)
+			// 注册自定义 example 模块（示例）
+			engine.RegisterModule(&ExampleModule{})
+		default:
+			engine.RegisterModule(lua_autogo.AllModules...)
+			// 注册自定义 example 模块（示例）
+			engine.RegisterModule(&ExampleModule{})
+		}
+
+		return &luaEngineWrapper{
+			engine:        engine,
+			scriptContent: scriptContent,
+			workDir:       workDir,
+			isBytecode:    isBytecode,
+			vfs:           s.vfs,
+		}, nil
+
+	case ScriptTypeJavaScript:
+		config := js_engine.DefaultConfig()
+		// 设置虚拟文件系统，让 require 从虚拟文件系统加载模块
+		config.FileSystem = s.vfs
+		// 设置 require 路径为 "." 表示从虚拟文件系统根目录搜索
+		config.RequirePaths = []string{"."}
+
+		engine := js_engine.NewJSEngine(&config)
+
+		switch codeStyle {
+		case CodeStyleAutogo:
+			engine.RegisterModule(js_autogo.AllModules...)
+			// 注册自定义 example 模块（示例）
+			engine.RegisterModule(&JSExampleModule{})
+		case CodeStyleNodejs:
+			engine.RegisterModule(js_autogo.AllModules...)
+			// 注册自定义 example 模块（示例）
+			engine.RegisterModule(&JSExampleModule{})
+		default:
+			engine.RegisterModule(js_autogo.AllModules...)
+			// 注册自定义 example 模块（示例）
+			engine.RegisterModule(&JSExampleModule{})
+		}
+
+		return &jsEngineWrapper{
+			engine:        engine,
+			scriptContent: scriptContent,
+			workDir:       workDir,
+			vfs:           s.vfs,
+			scriptPath:    scriptRelPath,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("不支持的脚本类型: %s", scriptType)
+	}
+}
+
+// luaEngineWrapper Lua 引擎包装器
+type luaEngineWrapper struct {
+	engine        *lua_engine.LuaEngine
+	scriptContent string
+	workDir       string
+	isBytecode    bool
+	vfs           *VirtualFS
+}
+
+func (w *luaEngineWrapper) Start() (err error) {
+	// 在引擎执行层面捕获任何 panic
+	defer func() {
+		if r := recover(); r != nil {
+			rawMsg := fmt.Sprintf("%v", r)
+			cleanMsg := sanitizeErrorMessage(rawMsg)
+			err = fmt.Errorf("Lua 引擎执行异常: %s", cleanMsg)
+			log.Printf("[LUA PANIC] %s", cleanMsg)
+		}
+	}()
+
+	// 重定向 Lua 的 print 函数，清理输出中的特殊字符
+	state := w.engine.GetState()
+	state.SetGlobal("print", state.NewFunction(func(L *lua.LState) int {
+		top := L.GetTop()
+		var parts []string
+		for i := 1; i <= top; i++ {
+			parts = append(parts, L.ToString(i))
+		}
+		msg := strings.Join(parts, "\t")
+		// 清理特殊字符后输出
+		cleanMsg := sanitizeOutput(msg)
+		fmt.Println(cleanMsg)
+		return 0
+	}))
+
+	// 设置自定义的模块加载器，让 require 从虚拟文件系统加载模块
+	// 在 gopher-lua 中，require 函数从注册表的 _LOADERS 获取加载器
+	// 而不是从 package.loaders（虽然两者应该保持同步）
+
+	// 创建自定义 VFS 加载器函数
+	vfsLoader := state.NewFunction(func(L *lua.LState) int {
+		moduleName := L.CheckString(1)
+		debugLog("[DEBUG] VFS 加载器被调用，模块名: %s", moduleName)
+
+		// 尝试多种路径格式
+		possiblePaths := []string{
+			moduleName + ".lua",
+			moduleName,
+			filepath.Join(w.workDir, moduleName+".lua"),
+			filepath.Join(w.workDir, moduleName),
+		}
+
+		for _, path := range possiblePaths {
+			// 尝试从虚拟文件系统读取
+			content, readErr := w.vfs.ReadFile(path)
+			if readErr == nil {
+				debugLog("[DEBUG] 从 VFS 找到模块: %s, 长度: %d", path, len(content))
+				// 检查是否是字节码格式
+				if isLuaBytecode(content) {
+					// 字节码格式：反序列化后加载
+					proto, deserializeErr := deserializeBytecode(content)
+					if deserializeErr != nil {
+						L.RaiseError("反序列化模块 %s 失败: %v", path, deserializeErr)
+						return 0
+					}
+					fn := L.NewFunctionFromProto(proto)
+					L.Push(fn)
+					return 1
+				}
+
+				// 源码格式：编译并返回
+				fn, compileErr := L.LoadString(string(content))
+				if compileErr != nil {
+					L.RaiseError("编译模块 %s 失败: %v", path, compileErr)
+					return 0
+				}
+				L.Push(fn)
+				return 1
+			}
+		}
+
+		debugLog("[DEBUG] VFS 加载器未找到模块: %s", moduleName)
+		// 未找到模块，返回 nil 让下一个加载器尝试
+		L.Push(lua.LNil)
+		return 1
+	})
+
+	// 获取现有的 loaders 并创建新的 loaders 表
+	pkg := state.GetGlobal("package")
+	debugLog("[DEBUG] package 类型: %T", pkg)
+	if tbl, ok := pkg.(*lua.LTable); ok {
+		// 获取现有的 loaders 表
+		loaders := tbl.RawGetString("loaders")
+		debugLog("[DEBUG] loaders 类型: %T, 值: %v", loaders, loaders)
+		if loadersTbl, ok := loaders.(*lua.LTable); ok {
+			// 创建新的 loaders 表，将自定义加载器放在第一位
+			newLoaders := state.NewTable()
+			newLoaders.Append(vfsLoader)
+
+			// 复制原有的加载器
+			for i := 1; ; i++ {
+				loader := loadersTbl.RawGetInt(i)
+				if loader == lua.LNil {
+					break
+				}
+				newLoaders.Append(loader)
+			}
+
+			// 设置 package.loaders
+			tbl.RawSetString("loaders", newLoaders)
+
+			// 同时设置注册表中的 _LOADERS（这是 require 函数实际使用的）
+			state.SetField(state.Get(lua.RegistryIndex), "_LOADERS", newLoaders)
+			debugLog("[DEBUG] 已设置新的 loaders 和 _LOADERS")
+		}
+	}
+
+	// 根据是否是字节码选择执行方式
+	if w.isBytecode {
+		// 字节码模式
+		scriptBytes := []byte(w.scriptContent)
+
+		// 调试：打印字节码前 20 字节
+		previewLen := 20
+		if len(scriptBytes) < previewLen {
+			previewLen = len(scriptBytes)
+		}
+		debugLog("[DEBUG] 字节码前 %d 字节 (hex): %x", previewLen, scriptBytes[:previewLen])
+		debugLog("[DEBUG] 字节码长度: %d, isLuaBytecode: %v", len(scriptBytes), isLuaBytecode(scriptBytes))
+
+		// 检测是否已经是序列化的字节码格式
+		if isLuaBytecode(scriptBytes) {
+			// 反序列化字节码并执行
+			proto, deserializeErr := deserializeBytecode(scriptBytes)
+			if deserializeErr != nil {
+				debugLog("[DEBUG] 反序列化字节码失败: %v", deserializeErr)
+				return fmt.Errorf("反序列化字节码失败: %v", deserializeErr)
+			}
+
+			debugLog("[DEBUG] 反序列化成功: SourceName=%s, NumUpvalues=%d, NumParams=%d, CodeLen=%d, ConstantsLen=%d, ProtosLen=%d",
+				proto.SourceName, proto.NumUpvalues, proto.NumParameters, len(proto.Code), len(proto.Constants), len(proto.FunctionPrototypes))
+
+			// 使用 gopher-lua 的 NewFunctionFromProto 创建函数并执行
+			state := w.engine.GetState()
+			lfunc := state.NewFunctionFromProto(proto)
+			state.Push(lfunc)
+			pcallErr := state.PCall(0, lua.MultRet, nil)
+			debugLog("[DEBUG] PCall 执行完成, 错误: %v", pcallErr)
+			return pcallErr
+		}
+
+		// 不是字节码格式，编译源码为字节码后执行
+		bytecode, compileErr := w.engine.CompileString(w.scriptContent, "main")
+		if compileErr != nil {
+			return fmt.Errorf("编译字节码失败: %v", compileErr)
+		}
+		return w.engine.ExecuteBytecode(bytecode)
+	}
+
+	// 源码模式：直接执行
+	return w.engine.ExecuteString(w.scriptContent)
+}
+
+func (w *luaEngineWrapper) Pause() {
+	w.engine.Pause()
+}
+
+func (w *luaEngineWrapper) Resume() {
+	w.engine.Resume()
+}
+
+func (w *luaEngineWrapper) Stop() {
+	w.engine.Stop()
+}
+
+func (w *luaEngineWrapper) Close() {
+	w.engine.Close()
+}
+
+// jsEngineWrapper JavaScript 引擎包装器
+type jsEngineWrapper struct {
+	engine        *js_engine.JSEngine
+	scriptContent string
+	workDir       string
+	vfs           *VirtualFS
+	scriptPath    string // 主脚本在 VFS 中的相对路径
+}
+
+// requireModuleCache 模块缓存
+var requireModuleCache = make(map[string]goja.Value)
+var requireModuleCacheMu sync.RWMutex
+
+func (w *jsEngineWrapper) Start() (err error) {
+	// 在引擎执行层面捕获任何 panic
+	defer func() {
+		if r := recover(); r != nil {
+			rawMsg := fmt.Sprintf("%v", r)
+			cleanMsg := sanitizeErrorMessage(rawMsg)
+			err = fmt.Errorf("JS 引擎执行异常: %s", cleanMsg)
+			log.Printf("[JS PANIC] %s", cleanMsg)
+		}
+	}()
+
+	vm := w.engine.GetVM()
+
+	// 注册使用 VFS 的自定义 require 函数
+	vm.Set("require", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) == 0 {
+			panic(vm.NewGoError(fmt.Errorf("require() requires a module name")))
+		}
+
+		modulePath := call.Argument(0).String()
+
+		// 解析模块路径
+		resolvedPath := w.resolveJSModulePath(modulePath)
+
+		// 检查缓存
+		requireModuleCacheMu.RLock()
+		if cached, exists := requireModuleCache[resolvedPath]; exists {
+			requireModuleCacheMu.RUnlock()
+			return cached
+		}
+		requireModuleCacheMu.RUnlock()
+
+		// 从 VFS 加载模块
+		content, err := w.vfs.ReadFile(resolvedPath)
+		if err != nil {
+			panic(vm.NewGoError(fmt.Errorf("cannot find module '%s': %v", modulePath, err)))
+		}
+
+		// 获取模块目录
+		moduleDir := filepath.Dir(resolvedPath)
+		moduleFile := filepath.Base(resolvedPath)
+
+		// 创建新的 module 和 exports 对象
+		moduleObj := vm.NewObject()
+		exportsObj := vm.NewObject()
+		moduleObj.Set("exports", exportsObj)
+
+		// 保存旧的 module, exports, __dirname, __filename
+		oldModule := vm.Get("module")
+		oldExports := vm.Get("exports")
+		oldDirname := vm.Get("__dirname")
+		oldFilename := vm.Get("__filename")
+
+		// 设置新的值
+		vm.Set("module", moduleObj)
+		vm.Set("exports", exportsObj)
+		vm.Set("__dirname", moduleDir)
+		vm.Set("__filename", moduleFile)
+
+		// 调试：打印模块内容
+		debugLog("[DEBUG] 加载模块 '%s', 长度: %d 字节", resolvedPath, len(content))
+		previewLen := 200
+		if len(content) < previewLen {
+			previewLen = len(content)
+		}
+		debugLog("[DEBUG] 模块内容开头: %s", string(content[:previewLen]))
+		// 打印末尾内容，检查是否有 module.exports
+		tailLen := 200
+		if len(content) < tailLen {
+			tailLen = len(content)
+		}
+		debugLog("[DEBUG] 模块内容末尾: %s", string(content[len(content)-tailLen:]))
+
+		// 直接执行代码，不使用 IIFE 包装
+		// 因为 module 和 exports 已经在 VM 中设置好了
+		_, execErr := vm.RunString(string(content))
+
+		// 恢复旧的值
+		if oldModule != goja.Undefined() {
+			vm.Set("module", oldModule)
+		}
+		if oldExports != goja.Undefined() {
+			vm.Set("exports", oldExports)
+		}
+		if oldDirname != goja.Undefined() {
+			vm.Set("__dirname", oldDirname)
+		}
+		if oldFilename != goja.Undefined() {
+			vm.Set("__filename", oldFilename)
+		}
+
+		if execErr != nil {
+			panic(vm.NewGoError(fmt.Errorf("failed to execute module '%s': %v", modulePath, execErr)))
+		}
+
+		// 获取导出的值
+		exportsValue := moduleObj.Get("exports")
+
+		// 缓存模块
+		requireModuleCacheMu.Lock()
+		requireModuleCache[resolvedPath] = exportsValue
+		requireModuleCacheMu.Unlock()
+
+		return exportsValue
+	})
+
+	// 根据主脚本路径设置 __dirname 和 __filename
+	scriptDir := filepath.Dir(w.scriptPath)
+	scriptFile := filepath.Base(w.scriptPath)
+	debugLogf("[DEBUG JS] scriptPath: '%s', scriptDir: '%s', scriptFile: '%s'\n", w.scriptPath, scriptDir, scriptFile)
+
+	// 重定向 JavaScript 的 console 函数，清理输出中的特殊字符
+	vm.Set("console", map[string]interface{}{
+		"log": func(call goja.FunctionCall) goja.Value {
+			for _, arg := range call.Arguments {
+				cleanMsg := sanitizeOutput(fmt.Sprintf("%v", arg))
+				fmt.Println(cleanMsg)
+			}
+			return goja.Undefined()
+		},
+		"error": func(call goja.FunctionCall) goja.Value {
+			for _, arg := range call.Arguments {
+				cleanMsg := sanitizeOutput(fmt.Sprintf("[ERROR] %v", arg))
+				fmt.Println(cleanMsg)
+			}
+			return goja.Undefined()
+		},
+		"warn": func(call goja.FunctionCall) goja.Value {
+			for _, arg := range call.Arguments {
+				cleanMsg := sanitizeOutput(fmt.Sprintf("[WARN] %v", arg))
+				fmt.Println(cleanMsg)
+			}
+			return goja.Undefined()
+		},
+	})
+
+	// 传递 scriptDir 给 ExecuteString，确保 __dirname 被正确设置
+	return w.engine.ExecuteString(w.scriptContent, scriptDir)
+}
+
+// resolveJSModulePath 解析 JS 模块路径
+func (w *jsEngineWrapper) resolveJSModulePath(modulePath string) string {
+	debugLog("[DEBUG resolveJSModulePath] 输入 modulePath: '%s'", modulePath)
+
+	// 处理相对路径
+	if strings.HasPrefix(modulePath, "./") || strings.HasPrefix(modulePath, "../") {
+		// 获取当前 __dirname
+		currentDir := "."
+		vm := w.engine.GetVM()
+		if dirname := vm.Get("__dirname"); dirname != goja.Undefined() {
+			currentDir = dirname.String()
+		}
+		debugLog("[DEBUG resolveJSModulePath] currentDir: '%s'", currentDir)
+
+		// 解析相对路径
+		absPath := filepath.Join(currentDir, modulePath)
+		debugLog("[DEBUG resolveJSModulePath] absPath after Join: '%s'", absPath)
+		result := w.tryJSExtensions(absPath)
+		debugLog("[DEBUG resolveJSModulePath] 最终返回: '%s'", result)
+		return result
+	}
+
+	// 处理纯模块名（不带路径前缀）
+	result := w.tryJSExtensions(modulePath)
+	debugLog("[DEBUG resolveJSModulePath] 纯模块名，最终返回: '%s'", result)
+	return result
+}
+
+// tryJSExtensions 尝试不同的 JS 文件扩展名
+func (w *jsEngineWrapper) tryJSExtensions(path string) string {
+	debugLog("[DEBUG tryJSExtensions] 输入 path: '%s'", path)
+
+	// 尝试直接读取
+	if w.vfs.FileExists(path) {
+		debugLog("[DEBUG tryJSExtensions] 直接找到: '%s'", path)
+		return path
+	}
+
+	// 尝试添加 .js 扩展名
+	jsPath := path + ".js"
+	if w.vfs.FileExists(jsPath) {
+		debugLog("[DEBUG tryJSExtensions] 添加.js找到: '%s'", jsPath)
+		return jsPath
+	}
+
+	// 尝试添加 .json 扩展名
+	jsonPath := path + ".json"
+	if w.vfs.FileExists(jsonPath) {
+		debugLog("[DEBUG tryJSExtensions] 添加.json找到: '%s'", jsonPath)
+		return jsonPath
+	}
+
+	// 尝试 index.js
+	indexPath := filepath.Join(path, "index.js")
+	if w.vfs.FileExists(indexPath) {
+		debugLog("[DEBUG tryJSExtensions] index.js找到: '%s'", indexPath)
+		return indexPath
+	}
+
+	debugLog("[DEBUG tryJSExtensions] 未找到，返回原路径: '%s'", path)
+	return path
+}
+
+func (w *jsEngineWrapper) Pause() {
+	w.engine.Pause()
+}
+
+func (w *jsEngineWrapper) Resume() {
+	w.engine.Resume()
+}
+
+func (w *jsEngineWrapper) Stop() {
+	w.engine.Stop()
+}
+
+func (w *jsEngineWrapper) Close() {
+	w.engine.Close()
+}
+
+func (s *TCPServer) Shutdown(ctx context.Context) error {
+	log.Printf("正在关闭 TCP Socket 服务器...")
+
+	s.cancel()
+
+	if s.listener != nil {
+		s.listener.Close()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+// ========================================
+// 主函数
+// ========================================
+
+// sanitizeErrorMessage 清理错误消息中的特殊字符，避免破坏 TUI 显示
+func sanitizeErrorMessage(msg string) string {
+	replacer := strings.NewReplacer(
+		"\x1b", "", // 移除 ESC (转义字符)
+		"\r", "", // 移除回车
+		"\n", " ", // 换行替换为空格
+		"\t", " ", // 制表符替换为空格
+	)
+	result := replacer.Replace(msg)
+
+	// 限制消息长度，避免过长
+	if len(result) > 200 {
+		result = result[:200] + "...(截断)"
+	}
+
+	return result
+}
+
+// sanitizeOutput 清理输出中的特殊字符，避免破坏 TUI 显示
+// 保留换行符（用于格式化输出），但移除 ANSI 转义序列等控制字符
+func sanitizeOutput(msg string) string {
+	// 移除 ANSI 转义序列（如颜色代码、光标控制等）
+	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	result := ansiPattern.ReplaceAllString(msg, "")
+
+	// 移除其他控制字符（保留换行、制表符）
+	var cleaned strings.Builder
+	for _, r := range result {
+		// 保留可打印字符、换行符、制表符
+		if r >= 32 || r == '\n' || r == '\t' {
+			cleaned.WriteRune(r)
+		}
+	}
+
+	return cleaned.String()
+}
+
+func main() {
+	addr := ":8080"
+	if port := os.Getenv("PORT"); port != "" {
+		addr = ":" + port
+	}
+
+	server := NewTCPServer(addr)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	if runtime.GOOS != "windows" {
+		signal.Notify(sigChan, syscall.SIGTERM)
+	}
+
+	go func() {
+		sig := <-sigChan
+		log.Printf("收到信号 %v，正在关闭服务器...", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		server.Shutdown(ctx)
+	}()
+
+	if err := server.Start(); err != nil {
+		log.Fatalf("服务器启动失败: %v", err)
+	}
+
+	<-server.ctx.Done()
+}
+
+// ========================================
+// Example 模块 - 自定义模块示例
+// ========================================
+// 这个模块展示了如何实现自己的 Lua 模块
+// 用户可以参考这个实现来创建自己的模块
+
+// ExampleModule 示例模块结构体
+type ExampleModule struct{}
+
+// Name 返回模块名称
+func (m *ExampleModule) Name() string {
+	return "example"
+}
+
+// IsAvailable 返回模块是否可用
+func (m *ExampleModule) IsAvailable() bool {
+	return true
+}
+
+// Register 向引擎注册方法
+func (m *ExampleModule) Register(engine lua_model.Engine) error {
+	state := engine.GetState()
+
+	// 创建 example 表
+	exampleObj := state.NewTable()
+	state.SetGlobal("example", exampleObj)
+
+	// 注册 hello 方法
+	// 用法: example.hello() 或 example.hello("name")
+	exampleObj.RawSetString("hello", state.NewFunction(func(L *lua.LState) int {
+		// 检查参数数量
+		n := L.GetTop()
+
+		if n >= 1 {
+			// 如果有参数，获取第一个参数作为名字
+			name := L.CheckString(1)
+			fmt.Printf("Hello, %s!\n", name)
+		} else {
+			// 无参数时输出 Hello, World!
+			fmt.Println("Hello, World!")
+		}
+
+		return 0 // 返回值数量
+	}))
+
+	// 注册 add 方法 - 演示返回值
+	// 用法: local result = example.add(1, 2)
+	exampleObj.RawSetString("add", state.NewFunction(func(L *lua.LState) int {
+		a := L.CheckInt(1)
+		b := L.CheckInt(2)
+		result := a + b
+		L.Push(lua.LNumber(result))
+		return 1 // 返回一个值
+	}))
+
+	// 注册 getVersion 方法 - 演示返回字符串
+	// 用法: local version = example.getVersion()
+	exampleObj.RawSetString("getVersion", state.NewFunction(func(L *lua.LState) int {
+		L.Push(lua.LString("1.0.0"))
+		return 1
+	}))
+
+	// 注册 getInfo 方法 - 演示返回 table
+	// 用法: local info = example.getInfo()
+	exampleObj.RawSetString("getInfo", state.NewFunction(func(L *lua.LState) int {
+		info := L.NewTable()
+		info.RawSetString("name", lua.LString("example-module"))
+		info.RawSetString("version", lua.LString("1.0.0"))
+		info.RawSetString("author", lua.LString("AutoGo"))
+		L.Push(info)
+		return 1
+	}))
+
+	return nil
+}

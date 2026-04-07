@@ -412,7 +412,7 @@ func (m *Manager) Deploy(projectPath, device string) error {
 }
 
 // Init 初始化项目
-func (m *Manager) Init(projectPath, target string) error {
+func (m *Manager) Init(projectPath, target, devicePort string) error {
 	m.printer.Info("初始化项目 (目标: %s)...", target)
 
 	if m.agPath == "" {
@@ -445,7 +445,7 @@ func (m *Manager) Init(projectPath, target string) error {
 	}
 
 	// 释放模板文件到项目目录
-	if err := m.releaseTemplateFiles(projectPath); err != nil {
+	if err := m.releaseTemplateFiles(projectPath, devicePort); err != nil {
 		m.printer.Warning("释放模板文件失败: %v", err)
 		// 不返回错误，因为初始化已经成功
 	}
@@ -453,8 +453,8 @@ func (m *Manager) Init(projectPath, target string) error {
 	return nil
 }
 
-// releaseTemplateFiles 释放模板文件到项目目录
-func (m *Manager) releaseTemplateFiles(projectPath string) error {
+// releaseTemplateFiles 释放模板文件到项目目录（仅初始化时调用，只释放 main.go）
+func (m *Manager) releaseTemplateFiles(projectPath, devicePort string) error {
 	m.printer.Info("正在释放模板文件...")
 
 	// 确定目标路径
@@ -468,7 +468,7 @@ func (m *Manager) releaseTemplateFiles(projectPath string) error {
 		targetDir = wd
 	}
 
-	// 1. 释放 scripts 目录
+	// 1. 释放 scripts 目录到项目根目录
 	scriptsDir := filepath.Join(targetDir, "scripts")
 	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
 		return fmt.Errorf("创建 scripts 目录失败: %w", err)
@@ -512,14 +512,117 @@ func (m *Manager) releaseTemplateFiles(projectPath string) error {
 		return fmt.Errorf("释放 scripts 目录失败: %w", err)
 	}
 
-	// 2. 释放 main.go.code 为 main.go
-	mainGoPath := filepath.Join(targetDir, "main.go")
-	if err := os.WriteFile(mainGoPath, []byte(mainGoCode), 0644); err != nil {
-		return fmt.Errorf("写入 main.go 失败: %w", err)
+	// 2. 创建 .autogo_scriptengine_debugger 隐藏目录
+	hiddenDir := filepath.Join(targetDir, ".autogo_scriptengine_debugger")
+	if err := os.MkdirAll(hiddenDir, 0755); err != nil {
+		return fmt.Errorf("创建 .autogo_scriptengine_debugger 目录失败: %w", err)
 	}
-	m.printer.Verbose("已释放: %s", mainGoPath)
+
+	// 3. 创建 debugger 目录并释放 debugger.go.code
+	debuggerDir := filepath.Join(hiddenDir, "debugger")
+	if err := os.MkdirAll(debuggerDir, 0755); err != nil {
+		return fmt.Errorf("创建 debugger 目录失败: %w", err)
+	}
+
+	// 替换默认端口为配置的端口
+	debuggerGoContent := DebuggerGoCode
+	if devicePort != "" && devicePort != "8080" {
+		// 将 addr := ":8080" 替换为 addr := ":<devicePort>"
+		debuggerGoContent = strings.Replace(debuggerGoContent, `addr := ":8080"`, fmt.Sprintf(`addr := ":%s"`, devicePort), 1)
+		m.printer.Verbose("已将默认端口 8080 替换为 %s", devicePort)
+	}
+
+	// 释放 debugger.go.code 到 debugger 目录作为 main.go
+	debuggerMainGoPath := filepath.Join(debuggerDir, "main.go")
+	if err := os.WriteFile(debuggerMainGoPath, []byte(debuggerGoContent), 0644); err != nil {
+		return fmt.Errorf("写入 .autogo_scriptengine_debugger/debugger/main.go 失败: %w", err)
+	}
+	m.printer.Verbose("已释放: %s", debuggerMainGoPath)
+
+	// 4. 在根目录创建链接指向 debugger/main.go
+	rootMainGoPath := filepath.Join(targetDir, "main.go")
+	// 如果已存在链接或文件，先删除
+	if _, err := os.Lstat(rootMainGoPath); err == nil {
+		os.Remove(rootMainGoPath)
+	}
+	// 优先尝试符号链接（Unix/macOS 原生支持）
+	relLink := filepath.Join(".autogo_scriptengine_debugger", "debugger", "main.go")
+	if err := os.Symlink(relLink, rootMainGoPath); err != nil {
+		// 符号链接失败，尝试硬链接（Windows 兼容）
+		if err := os.Link(debuggerMainGoPath, rootMainGoPath); err != nil {
+			// 硬链接也失败，回退到复制文件
+			m.printer.Warning("创建链接失败: %v，使用复制文件方式", err)
+			if err := os.WriteFile(rootMainGoPath, []byte(debuggerGoContent), 0644); err != nil {
+				return fmt.Errorf("写入 main.go 失败: %w", err)
+			}
+		} else {
+			m.printer.Verbose("已创建硬链接: %s -> %s", rootMainGoPath, debuggerMainGoPath)
+		}
+	} else {
+		m.printer.Verbose("已创建符号链接: %s -> %s", rootMainGoPath, relLink)
+	}
 
 	m.printer.Info("模板文件释放完成")
+	return nil
+}
+
+// releaseBuildTemplate 释放构建模板文件（构建时调用，释放 build.go 并覆盖 main.go 链接）
+func (m *Manager) releaseBuildTemplate(projectPath string) error {
+	m.printer.Info("正在释放构建模板文件...")
+
+	// 确定目标路径
+	targetDir := projectPath
+	if targetDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("获取当前目录失败: %w", err)
+		}
+		targetDir = wd
+	}
+
+	// 1. 确保 .autogo_scriptengine_debugger 隐藏目录存在
+	hiddenDir := filepath.Join(targetDir, ".autogo_scriptengine_debugger")
+	if err := os.MkdirAll(hiddenDir, 0755); err != nil {
+		return fmt.Errorf("创建 .autogo_scriptengine_debugger 目录失败: %w", err)
+	}
+
+	// 2. 创建 builder 目录并释放 build.go.code
+	builderDir := filepath.Join(hiddenDir, "builder")
+	if err := os.MkdirAll(builderDir, 0755); err != nil {
+		return fmt.Errorf("创建 builder 目录失败: %w", err)
+	}
+
+	// 释放 build.go.code 到 builder 目录作为 main.go
+	builderMainGoPath := filepath.Join(builderDir, "main.go")
+	if err := os.WriteFile(builderMainGoPath, []byte(BuildGoCode), 0644); err != nil {
+		return fmt.Errorf("写入 .autogo_scriptengine_debugger/builder/main.go 失败: %w", err)
+	}
+	m.printer.Verbose("已释放: %s", builderMainGoPath)
+
+	// 3. 覆盖根目录的 main.go 链接，指向 builder/main.go
+	rootMainGoPath := filepath.Join(targetDir, "main.go")
+	// 如果已存在链接或文件，先删除
+	if _, err := os.Lstat(rootMainGoPath); err == nil {
+		os.Remove(rootMainGoPath)
+	}
+	// 优先尝试符号链接（Unix/macOS 原生支持）
+	relLink := filepath.Join(".autogo_scriptengine_debugger", "builder", "main.go")
+	if err := os.Symlink(relLink, rootMainGoPath); err != nil {
+		// 符号链接失败，尝试硬链接（Windows 兼容）
+		if err := os.Link(builderMainGoPath, rootMainGoPath); err != nil {
+			// 硬链接也失败，回退到复制文件
+			m.printer.Warning("创建链接失败: %v，使用复制文件方式", err)
+			if err := os.WriteFile(rootMainGoPath, []byte(BuildGoCode), 0644); err != nil {
+				return fmt.Errorf("写入 main.go 失败: %w", err)
+			}
+		} else {
+			m.printer.Verbose("已创建硬链接: %s -> %s", rootMainGoPath, builderMainGoPath)
+		}
+	} else {
+		m.printer.Verbose("已创建符号链接: %s -> %s", rootMainGoPath, relLink)
+	}
+
+	m.printer.Info("构建模板文件释放完成")
 	return nil
 }
 

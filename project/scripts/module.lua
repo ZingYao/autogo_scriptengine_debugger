@@ -1,8 +1,16 @@
-local utils = {}
-utils.add = function(a, b)
+-- 简单测试模块 - 不使用任何混淆
+local M = {}
+
+M.add = function(a, b)
     return a + b
 end
 
-print("module.lua 加载成功")
+M.hello = function(name)
+    if name then
+        return "Hello, " .. name .. "!"
+    else
+        return "Hello, World!"
+    end
+end
 
-return utils
+return M

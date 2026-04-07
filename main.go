@@ -23,7 +23,7 @@ import (
 // App 主应用
 type App struct {
 	printer    *printer.Printer
-	config     *config.Config
+	config     *config.CombinedConfig
 	configMgr  *config.Manager
 	deviceMgr  *device.Manager
 	projectMgr *project.Manager
@@ -52,7 +52,11 @@ func (app *App) RunInteractive() error {
 	cfg, err := app.configMgr.Load()
 	if err != nil {
 		app.printer.Warning("加载配置失败: %v", err)
-		cfg = &config.Config{}
+		cfg = &config.CombinedConfig{
+			Global:  &config.GlobalConfig{},
+			Project: &config.ProjectConfig{CodeStyle: "autogo", DevicePort: config.DefaultDevicePort},
+			Runtime: &config.RuntimeState{},
+		}
 	}
 	app.config = cfg
 
@@ -71,9 +75,10 @@ func (app *App) RunTUI() error {
 	cfg, err := app.configMgr.Load()
 	if err != nil {
 		app.printer.Warning("加载配置失败: %v", err)
-		cfg = &config.Config{
-			CodeStyle:  "autogo",
-			DevicePort: "8080",
+		cfg = &config.CombinedConfig{
+			Global:  &config.GlobalConfig{},
+			Project: &config.ProjectConfig{CodeStyle: "autogo", DevicePort: config.DefaultDevicePort},
+			Runtime: &config.RuntimeState{},
 		}
 	}
 	app.config = cfg
@@ -90,19 +95,19 @@ func (app *App) checkAndFillConfig() error {
 	app.printer.Info("检查配置...")
 
 	// 检查代码风格
-	if app.config.CodeStyle == "" {
+	if app.config.Project.CodeStyle == "" {
 		styles := []string{"autogo", "lrappsoft", "nodejs"}
 		idx := app.input.ReadChoice("请选择代码风格", styles, 0)
-		app.config.CodeStyle = styles[idx]
+		app.config.Project.CodeStyle = styles[idx]
 	}
 
 	// 检查设备连接
-	if app.config.DeviceServiceURL == "" {
+	if app.config.Runtime.DeviceServiceURL == "" {
 		if err := app.autoConnectDevice(); err != nil {
 			return err
 		}
 	} else {
-		app.printer.Success("设备服务地址: %s", app.config.DeviceServiceURL)
+		app.printer.Success("设备服务地址: %s", app.config.Runtime.DeviceServiceURL)
 	}
 
 	// 保存配置
@@ -161,7 +166,7 @@ func (app *App) showMainMenu() error {
 
 // runScriptMenu 运行脚本菜单
 func (app *App) runScriptMenu() error {
-	app.printer.Info("当前工作目录: %s", app.config.ProjectPath)
+	app.printer.Info("当前工作目录: %s", app.config.Project.ProjectPath)
 
 	app.printer.Prompt("请输入脚本文件路径 (相对于项目路径): ")
 	reader := bufio.NewReader(os.Stdin)
@@ -185,17 +190,17 @@ func (app *App) runScriptMenu() error {
 	}
 
 	// 如果是相对路径，拼接项目路径
-	if !strings.HasPrefix(scriptFile, "/") && app.config.ProjectPath != "" {
-		scriptFile = app.config.ProjectPath + "/" + scriptFile
+	if !strings.HasPrefix(scriptFile, "/") && app.config.Project.ProjectPath != "" {
+		scriptFile = app.config.Project.ProjectPath + "/" + scriptFile
 	}
 
 	app.printer.Info("脚本路径: %s", scriptFile)
 	app.printer.Info("脚本类型: %s", scriptType)
-	app.printer.Info("代码风格: %s", app.config.CodeStyle)
+	app.printer.Info("代码风格: %s", app.config.Project.CodeStyle)
 
 	if app.input.Confirm("确认运行") {
-		runner := script.NewRunner(app.config.DeviceServiceURL, app.printer)
-		return runner.Run(scriptFile, scriptFile, app.config.CodeStyle)
+		runner := script.NewRunner(app.config.Runtime.DeviceServiceURL, app.printer)
+		return runner.Run(scriptFile, scriptFile, app.config.Project.CodeStyle, app.config.Project.Build.AutoCleanup)
 	}
 
 	return nil
@@ -208,7 +213,7 @@ func (app *App) stopScriptMenu() error {
 		return fmt.Errorf("未指定脚本 ID")
 	}
 
-	runner := script.NewRunner(app.config.DeviceServiceURL, app.printer)
+	runner := script.NewRunner(app.config.Runtime.DeviceServiceURL, app.printer)
 	return runner.Stop(scriptID)
 }
 
@@ -219,7 +224,7 @@ func (app *App) pauseScriptMenu() error {
 		return fmt.Errorf("未指定脚本 ID")
 	}
 
-	runner := script.NewRunner(app.config.DeviceServiceURL, app.printer)
+	runner := script.NewRunner(app.config.Runtime.DeviceServiceURL, app.printer)
 	return runner.Pause(scriptID)
 }
 
@@ -230,7 +235,7 @@ func (app *App) resumeScriptMenu() error {
 		return fmt.Errorf("未指定脚本 ID")
 	}
 
-	runner := script.NewRunner(app.config.DeviceServiceURL, app.printer)
+	runner := script.NewRunner(app.config.Runtime.DeviceServiceURL, app.printer)
 	return runner.Resume(scriptID)
 }
 
@@ -241,7 +246,7 @@ func (app *App) statusScriptMenu() error {
 		return fmt.Errorf("未指定脚本 ID")
 	}
 
-	runner := script.NewRunner(app.config.DeviceServiceURL, app.printer)
+	runner := script.NewRunner(app.config.Runtime.DeviceServiceURL, app.printer)
 	return runner.GetStatus(scriptID)
 }
 
@@ -252,7 +257,7 @@ func (app *App) errorScriptMenu() error {
 		return fmt.Errorf("未指定脚本 ID")
 	}
 
-	runner := script.NewRunner(app.config.DeviceServiceURL, app.printer)
+	runner := script.NewRunner(app.config.Runtime.DeviceServiceURL, app.printer)
 	return runner.GetError(scriptID)
 }
 
@@ -283,7 +288,7 @@ func (app *App) deviceMenu() error {
 func (app *App) listDevices() error {
 	app.printer.Info("正在获取设备列表...")
 
-	if _, err := app.deviceMgr.DetectADB(app.config.ADBPath); err != nil {
+	if _, err := app.deviceMgr.DetectADB(app.config.Global.ADBPath); err != nil {
 		return err
 	}
 
@@ -327,9 +332,9 @@ func (app *App) connectDeviceMenu() error {
 
 // getDeviceIPMenu 获取设备 IP 菜单
 func (app *App) getDeviceIPMenu() error {
-	deviceID := app.input.ReadString("请输入设备 ID (留空使用当前设备)", app.config.DeviceID)
+	deviceID := app.input.ReadString("请输入设备 ID (留空使用当前设备)", app.config.Project.DeviceID)
 	if deviceID == "" {
-		deviceID = app.config.DeviceID
+		deviceID = app.config.Project.DeviceID
 	}
 
 	if deviceID == "" {
@@ -348,12 +353,12 @@ func (app *App) getDeviceIPMenu() error {
 
 // scanPortMenu 扫描端口菜单
 func (app *App) scanPortMenu() error {
-	ip := app.input.ReadString("请输入 IP 地址", app.config.DeviceIP)
+	ip := app.input.ReadString("请输入 IP 地址", app.config.Runtime.DeviceIP)
 	if ip == "" {
 		return fmt.Errorf("未输入 IP 地址")
 	}
 
-	port := app.input.ReadString("请输入端口号", app.config.DevicePort)
+	port := app.input.ReadString("请输入端口号", app.config.Project.DevicePort)
 
 	app.printer.Info("正在扫描端口 %s:%s...", ip, port)
 
@@ -407,11 +412,11 @@ func (app *App) projectMenu() error {
 
 // startProjectMenu 启动项目菜单
 func (app *App) startProjectMenu() error {
-	projectPath := app.input.ReadString("项目路径 (留空使用默认)", app.config.ProjectPath)
-	deviceID := app.input.ReadString("设备 ID (留空使用当前设备)", app.config.DeviceID)
+	projectPath := app.input.ReadString("项目路径 (留空使用默认)", app.config.Project.ProjectPath)
+	deviceID := app.input.ReadString("设备 ID (留空使用当前设备)", app.config.Project.DeviceID)
 
 	if deviceID == "" {
-		deviceID = app.config.DeviceID
+		deviceID = app.config.Project.DeviceID
 	}
 
 	debug := app.input.ReadBool("是否启用调试模式", false)
@@ -426,7 +431,7 @@ func (app *App) startProjectMenu() error {
 
 	// 等待端口就绪
 	app.printer.Info("等待服务启动...")
-	if !app.projectMgr.WaitForReady(app.config.DeviceIP, app.config.DevicePort, 60) {
+	if !app.projectMgr.WaitForReady(app.config.Runtime.DeviceIP, app.config.Project.DevicePort, 60) {
 		return fmt.Errorf("项目启动失败（超时）")
 	}
 
@@ -468,18 +473,18 @@ func (app *App) buildProjectMenu() error {
 	embed := app.input.ReadBool("是否将 SO 库嵌入二进制", false)
 
 	app.printer.Info("编译项目...")
-	return app.projectMgr.Build(app.config.ProjectPath, target, embed)
+	return app.projectMgr.Build(app.config.Project.ProjectPath, target, embed)
 }
 
 // deployProjectMenu 部署项目菜单
 func (app *App) deployProjectMenu() error {
-	deviceID := app.input.ReadString("设备 ID (留空使用当前设备)", app.config.DeviceID)
+	deviceID := app.input.ReadString("设备 ID (留空使用当前设备)", app.config.Project.DeviceID)
 
 	if deviceID == "" {
-		deviceID = app.config.DeviceID
+		deviceID = app.config.Project.DeviceID
 	}
 
-	return app.projectMgr.Deploy(app.config.ProjectPath, deviceID)
+	return app.projectMgr.Deploy(app.config.Project.ProjectPath, deviceID)
 }
 
 // initProjectMenu 初始化项目菜单
@@ -487,7 +492,7 @@ func (app *App) initProjectMenu() error {
 	targets := []string{"android", "ios"}
 	target := targets[app.input.ReadChoice("请选择目标平台", targets, 0)]
 
-	return app.projectMgr.Init(app.config.ProjectPath, target)
+	return app.projectMgr.Init(app.config.Project.ProjectPath, target, app.config.Project.DevicePort)
 }
 
 // connectDeviceMenuAG 连接远程设备菜单（通过 AG）
@@ -506,12 +511,12 @@ func (app *App) configMenu() error {
 
 	menu.AddItem("1", "查看当前配置", "显示所有配置项", func() error {
 		app.printer.Info("当前配置:")
-		app.printer.Info("  代码风格: %s", app.config.CodeStyle)
-		app.printer.Info("  设备服务地址: %s", app.config.DeviceServiceURL)
-		app.printer.Info("  设备 ID: %s", app.config.DeviceID)
-		app.printer.Info("  设备 IP: %s", app.config.DeviceIP)
-		app.printer.Info("  设备端口: %s", app.config.DevicePort)
-		app.printer.Info("  项目路径: %s", app.config.ProjectPath)
+		app.printer.Info("  代码风格: %s", app.config.Project.CodeStyle)
+		app.printer.Info("  设备服务地址: %s", app.config.Runtime.DeviceServiceURL)
+		app.printer.Info("  设备 ID: %s", app.config.Project.DeviceID)
+		app.printer.Info("  设备 IP: %s", app.config.Runtime.DeviceIP)
+		app.printer.Info("  设备端口: %s", app.config.Project.DevicePort)
+		app.printer.Info("  项目路径: %s", app.config.Project.ProjectPath)
 		return nil
 	})
 
@@ -533,7 +538,11 @@ func (app *App) configMenu() error {
 				return err
 			}
 			app.printer.Success("配置文件已清除")
-			app.config = &config.Config{}
+			app.config = &config.CombinedConfig{
+				Global:  &config.GlobalConfig{},
+				Project: &config.ProjectConfig{CodeStyle: "autogo", DevicePort: config.DefaultDevicePort},
+				Runtime: &config.RuntimeState{},
+			}
 		}
 		return nil
 	})
@@ -545,12 +554,12 @@ func (app *App) configMenu() error {
 func (app *App) editConfigMenu() error {
 	app.printer.Info("修改配置 (直接回车保持当前值)")
 
-	app.config.CodeStyle = app.input.ReadString("代码风格", app.config.CodeStyle)
-	app.config.DeviceServiceURL = app.input.ReadString("设备服务地址", app.config.DeviceServiceURL)
-	app.config.DeviceID = app.input.ReadString("设备 ID", app.config.DeviceID)
-	app.config.DeviceIP = app.input.ReadString("设备 IP", app.config.DeviceIP)
-	app.config.DevicePort = app.input.ReadString("设备端口", app.config.DevicePort)
-	app.config.ProjectPath = app.input.ReadString("项目路径", app.config.ProjectPath)
+	app.config.Project.CodeStyle = app.input.ReadString("代码风格", app.config.Project.CodeStyle)
+	app.config.Runtime.DeviceServiceURL = app.input.ReadString("设备服务地址", app.config.Runtime.DeviceServiceURL)
+	app.config.Project.DeviceID = app.input.ReadString("设备 ID", app.config.Project.DeviceID)
+	app.config.Runtime.DeviceIP = app.input.ReadString("设备 IP", app.config.Runtime.DeviceIP)
+	app.config.Project.DevicePort = app.input.ReadString("设备端口", app.config.Project.DevicePort)
+	app.config.Project.ProjectPath = app.input.ReadString("项目路径", app.config.Project.ProjectPath)
 
 	app.printer.Success("配置已更新")
 	return nil
@@ -561,14 +570,14 @@ func (app *App) autoConnectDevice() error {
 	app.printer.Info("正在检查设备连接...")
 
 	// 检测ADB
-	detectedADBPath, err := app.deviceMgr.DetectADB(app.config.ADBPath)
+	detectedADBPath, err := app.deviceMgr.DetectADB(app.config.Global.ADBPath)
 	if err != nil {
 		return err
 	}
 
 	// 如果配置中没有 ADB 路径，自动保存检测到的路径
-	if app.config.ADBPath == "" && detectedADBPath != "" {
-		app.config.ADBPath = detectedADBPath
+	if app.config.Global.ADBPath == "" && detectedADBPath != "" {
+		app.config.Global.ADBPath = detectedADBPath
 		app.printer.Verbose("自动保存 ADB 路径到配置: %s", detectedADBPath)
 		if err := app.configMgr.Save(app.config); err != nil {
 			app.printer.Verbose("保存 ADB 路径失败: %s", err)
@@ -615,18 +624,18 @@ func (app *App) autoConnectDevice() error {
 	var deviceID string
 	if len(devices) > 0 {
 		// 检查配置文件中的设备是否可用
-		if app.config.DeviceID != "" {
+		if app.config.Project.DeviceID != "" {
 			for _, d := range devices {
-				if d.Serial == app.config.DeviceID {
-					app.printer.Info("使用配置中的设备: %s", app.config.DeviceID)
-					deviceID = app.config.DeviceID
+				if d.Serial == app.config.Project.DeviceID {
+					app.printer.Info("使用配置中的设备: %s", app.config.Project.DeviceID)
+					deviceID = app.config.Project.DeviceID
 					break
 				}
 			}
 			if deviceID == "" {
-				app.printer.Warning("配置中的设备 %s 未连接", app.config.DeviceID)
-				app.config.DeviceID = ""
-				app.config.DeviceIP = ""
+				app.printer.Warning("配置中的设备 %s 未连接", app.config.Project.DeviceID)
+				app.config.Project.DeviceID = ""
+				app.config.Runtime.DeviceIP = ""
 			}
 		}
 
@@ -669,18 +678,18 @@ func (app *App) autoConnectDevice() error {
 	app.printer.Success("设备 IP: %s", deviceIP)
 
 	// 保存设备信息
-	app.config.DeviceID = deviceID
-	app.config.DeviceIP = deviceIP
+	app.config.Project.DeviceID = deviceID
+	app.config.Runtime.DeviceIP = deviceIP
 	app.printer.Info("保存设备信息到配置文件...")
 	app.configMgr.Save(app.config)
 
 	// 扫描端口
-	app.printer.Info("正在扫描服务端口: %s", app.config.DevicePort)
-	if app.deviceMgr.ScanPort(deviceIP, app.config.DevicePort, 2*time.Second) {
-		app.printer.Success("端口 %s 可访问", app.config.DevicePort)
-		app.config.DeviceServiceURL = fmt.Sprintf("%s:%s", deviceIP, app.config.DevicePort)
+	app.printer.Info("正在扫描服务端口: %s", app.config.Project.DevicePort)
+	if app.deviceMgr.ScanPort(deviceIP, app.config.Project.DevicePort, 2*time.Second) {
+		app.printer.Success("端口 %s 可访问", app.config.Project.DevicePort)
+		app.config.Runtime.DeviceServiceURL = fmt.Sprintf("%s:%s", deviceIP, app.config.Project.DevicePort)
 	} else {
-		app.printer.Warning("端口 %s 不可访问", app.config.DevicePort)
+		app.printer.Warning("端口 %s 不可访问", app.config.Project.DevicePort)
 
 		// 自动启动项目
 		if err := app.autoStartProject(deviceID); err != nil {
@@ -688,15 +697,15 @@ func (app *App) autoConnectDevice() error {
 		}
 	}
 
-	app.printer.Success("设备服务地址: %s", app.config.DeviceServiceURL)
+	app.printer.Success("设备服务地址: %s", app.config.Runtime.DeviceServiceURL)
 	return nil
 }
 
 // autoStartProject 自动启动项目
 func (app *App) autoStartProject(deviceID string) error {
 	app.printer.Info("检测到端口不可访问，自动启动项目...")
-	if app.config.ProjectPath != "" {
-		app.printer.Info("项目路径: %s", app.config.ProjectPath)
+	if app.config.Project.ProjectPath != "" {
+		app.printer.Info("项目路径: %s", app.config.Project.ProjectPath)
 	} else {
 		app.printer.Info("未设置项目路径，将使用默认路径启动")
 	}
@@ -708,7 +717,7 @@ func (app *App) autoStartProject(deviceID string) error {
 
 	// 非阻塞启动项目
 	app.printer.Info("启动项目...")
-	if err := app.projectMgr.RunAsync(app.config.ProjectPath, deviceID, false); err != nil {
+	if err := app.projectMgr.RunAsync(app.config.Project.ProjectPath, deviceID, false); err != nil {
 		return fmt.Errorf("启动项目失败: %v", err)
 	}
 
@@ -716,7 +725,7 @@ func (app *App) autoStartProject(deviceID string) error {
 
 	// 轮询检测端口判断服务是否启动
 	app.printer.Info("等待服务启动...")
-	if !app.projectMgr.WaitForReady(app.config.DeviceIP, app.config.DevicePort, 60) {
+	if !app.projectMgr.WaitForReady(app.config.Runtime.DeviceIP, app.config.Project.DevicePort, 60) {
 		return fmt.Errorf("项目启动失败（超时）")
 	}
 
@@ -724,23 +733,23 @@ func (app *App) autoStartProject(deviceID string) error {
 	app.printer.Info("扫描服务端口...")
 	time.Sleep(1 * time.Second)
 
-	if app.deviceMgr.ScanPort(app.config.DeviceIP, app.config.DevicePort, 2*time.Second) {
-		app.printer.Success("端口 %s 可访问", app.config.DevicePort)
-		app.config.DeviceServiceURL = fmt.Sprintf("http://%s:%s", app.config.DeviceIP, app.config.DevicePort)
+	if app.deviceMgr.ScanPort(app.config.Runtime.DeviceIP, app.config.Project.DevicePort, 2*time.Second) {
+		app.printer.Success("端口 %s 可访问", app.config.Project.DevicePort)
+		app.config.Runtime.DeviceServiceURL = fmt.Sprintf("http://%s:%s", app.config.Runtime.DeviceIP, app.config.Project.DevicePort)
 		return nil
 	}
 
 	// 尝试其他端口
-	app.printer.Warning("端口 %s 不可访问，尝试扫描其他常用端口...", app.config.DevicePort)
+	app.printer.Warning("端口 %s 不可访问，尝试扫描其他常用端口...", app.config.Project.DevicePort)
 
 	ports := []string{"8080", "9090", "3000", "8000", "5000"}
 	var foundPort string
 	for _, port := range ports {
-		if port == app.config.DevicePort {
+		if port == app.config.Project.DevicePort {
 			continue
 		}
 		app.printer.Info("尝试端口: %s", port)
-		if app.deviceMgr.ScanPort(app.config.DeviceIP, port, 2*time.Second) {
+		if app.deviceMgr.ScanPort(app.config.Runtime.DeviceIP, port, 2*time.Second) {
 			foundPort = port
 			app.printer.Success("找到可用端口: %s", port)
 			break
@@ -748,8 +757,8 @@ func (app *App) autoStartProject(deviceID string) error {
 	}
 
 	if foundPort != "" {
-		app.config.DevicePort = foundPort
-		app.config.DeviceServiceURL = fmt.Sprintf("%s:%s", app.config.DeviceIP, app.config.DevicePort)
+		app.config.Project.DevicePort = foundPort
+		app.config.Runtime.DeviceServiceURL = fmt.Sprintf("%s:%s", app.config.Runtime.DeviceIP, app.config.Project.DevicePort)
 		return nil
 	}
 
@@ -759,7 +768,7 @@ func (app *App) autoStartProject(deviceID string) error {
 // checkDeviceService 检查服务器连接
 func (app *App) checkDeviceService() error {
 	// 简单检查服务器是否可访问
-	app.printer.Info("设备服务地址: %s", app.config.DeviceServiceURL)
+	app.printer.Info("设备服务地址: %s", app.config.Runtime.DeviceServiceURL)
 	return nil
 }
 
@@ -790,16 +799,16 @@ func (app *App) RunCommand(operation, scriptFile, scriptID, scriptType, codeStyl
 	app.config = cfg
 
 	if codeStyle != "" {
-		app.config.CodeStyle = codeStyle
+		app.config.Project.CodeStyle = codeStyle
 	}
 	if serverURL != "" {
-		app.config.DeviceServiceURL = serverURL
+		app.config.Runtime.DeviceServiceURL = serverURL
 	}
 	if projectPath != "" {
-		app.config.ProjectPath = projectPath
+		app.config.Project.ProjectPath = projectPath
 	}
 	if port != "" {
-		app.config.DevicePort = port
+		app.config.Project.DevicePort = port
 	}
 	if scriptType == "" {
 		if strings.HasSuffix(scriptFile, ".lua") {
@@ -819,7 +828,7 @@ func (app *App) RunCommand(operation, scriptFile, scriptID, scriptType, codeStyl
 	}
 
 	// 检查服务器连接
-	if app.config.DeviceServiceURL == "" {
+	if app.config.Runtime.DeviceServiceURL == "" {
 		if err := app.autoConnectDevice(); err != nil {
 			return err
 		}
@@ -837,11 +846,11 @@ func (app *App) RunCommand(operation, scriptFile, scriptID, scriptType, codeStyl
 	}
 
 	// 执行操作
-	runner := script.NewRunner(app.config.DeviceServiceURL, app.printer)
+	runner := script.NewRunner(app.config.Runtime.DeviceServiceURL, app.printer)
 
 	switch operation {
 	case "run":
-		return runner.Run(scriptFile, scriptType, app.config.CodeStyle)
+		return runner.Run(scriptFile, scriptType, app.config.Project.CodeStyle, app.config.Project.Build.AutoCleanup)
 	case "stop":
 		return runner.Stop(scriptID)
 	case "pause":

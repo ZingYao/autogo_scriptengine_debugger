@@ -12,12 +12,14 @@ import (
 // VersionListView 版本列表视图
 type VersionListView struct {
 	*tview.Flex
-	app      *tview.Application
-	manager  *AGManager
-	printer  *printer.Printer
-	list     *tview.List
-	versions []VersionInfo
-	onBack   func()
+	app           *tview.Application
+	manager       *AGManager
+	printer       *printer.Printer
+	list          *tview.List
+	versions      []VersionInfo
+	onBack        func()
+	onToggleMouse func()
+	onExit        func()
 }
 
 // NewVersionListView 创建版本列表视图
@@ -47,6 +49,22 @@ func (v *VersionListView) setupUI() {
 
 	// 设置键盘事件
 	v.list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// F9 键切换鼠标模式 - 全局快捷键
+		if event.Key() == tcell.KeyF9 {
+			if v.onToggleMouse != nil {
+				v.onToggleMouse()
+			}
+			return nil
+		}
+
+		// Ctrl+Q 直接退出 - 全局快捷键
+		if event.Modifiers() == tcell.ModCtrl && (event.Rune() == 'q' || event.Rune() == 'Q') {
+			if v.onExit != nil {
+				v.onExit()
+			}
+			return nil
+		}
+
 		if event.Rune() == 'u' || event.Rune() == 'U' {
 			v.updateToLatest()
 			return nil
@@ -173,4 +191,14 @@ func (v *VersionListView) updateToLatest() {
 // SetOnBack 设置返回回调
 func (v *VersionListView) SetOnBack(callback func()) {
 	v.onBack = callback
+}
+
+// SetOnToggleMouse 设置切换鼠标模式回调
+func (v *VersionListView) SetOnToggleMouse(callback func()) {
+	v.onToggleMouse = callback
+}
+
+// SetOnExit 设置退出回调
+func (v *VersionListView) SetOnExit(callback func()) {
+	v.onExit = callback
 }
