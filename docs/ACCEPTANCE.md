@@ -28,7 +28,7 @@
 
 设备：`192.168.31.4:5555`，物理序列号 `bc29432a`。
 
-- `/v1/capabilities`：协议 `1.0`，包含 `lua`、`glua`、`gluac`、`dap`、`incremental-sync`、`set-variable`。
+- `/v1/capabilities`：协议 `1.0`，包含 `lua`、`glua`、`gluac`、`javascript`、`js`、`dap`、`incremental-sync`、`set-variable`。
 - 单文件上限 16 MiB，批次上限 64 MiB。
 - `setBreakpoints` 返回 verified；运行后收到 `stopped: breakpoint`。
 - 顶层栈帧为 `/data/local/tmp/.autogo/remote/releases/acceptance-003/main.lua:1`。

@@ -10,7 +10,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
 
-/** 增量同步并远程运行当前 Lua/GLua 文件。 */
+/** 增量同步并远程运行当前 Lua/GLua/JavaScript 文件。 */
 public final class AutoGoRemoteRunCurrentAction extends DumbAwareAction {
     /** 创建当前脚本远程运行动作。 */
     public AutoGoRemoteRunCurrentAction() {

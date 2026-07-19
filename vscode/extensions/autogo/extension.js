@@ -1980,7 +1980,7 @@ class AutoGoConsoleViewProvider {
     const button = (command, title, icon) => `<button class="tool" data-command="${command}" data-tooltip="${title}" aria-label="${title}"><img src="${iconUri(icon)}" alt=""></button>`;
     const menuButton = (menu, title, icon) => `<button class="tool" data-menu="${menu}" data-tooltip="${title}" aria-label="${title}"><img src="${iconUri(icon)}" alt=""><span class="chevron">▾</span></button>`;
     const toolbar = [
-      button("autogo.quickDebug", "快速调试当前 Lua/GLua 文件（F6）", "debug"), button("autogo.run", "运行当前 Lua/GLua 文件（F7）", "run"), button("autogo.stop", "停止运行（F8）", "stop"),
+      button("autogo.quickDebug", "快速调试当前 Lua/GLua/JavaScript 文件（F6）", "debug"), button("autogo.run", "运行当前 Lua/GLua/JavaScript 文件（F7）", "run"), button("autogo.stop", "停止运行（F8）", "stop"),
       button("autogo.startEngine", "启动或重启移动端脚本引擎", "engine"), button("autogo.syncResources", "同步当前设备架构的运行库资源（F10）", "sync"), button("autogo.nodeAssistant", "启动节点助手并在内置浏览器打开", "node"),
       menuButton("build", "编译项目", "build"), menuButton("glua", "GLua 工具", "glua"), menuButton("device", "设备管理与无线连接", "device"), menuButton("init", "初始化项目", "init"),
       button("autogo.pushFile", "选择本地文件并推送到设备", "push"), button("autogo.officialDocs", "在内置浏览器打开官方文档", "docs"), button("autogo.applyEngineConfig", "应用模块策略并重新生成引擎入口", "apply"),

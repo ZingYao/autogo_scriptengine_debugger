@@ -36,8 +36,8 @@ Android 设备连接优先级为：已经验证的无线 ADB、Android 11+ 无�
   "engineVersion": "0.1.0",
   "runtimeVersion": "1.0.0",
   "state": "stopped",
-  "features": ["lua", "glua", "gluac", "dap", "incremental-sync"],
-  "dap": {"transport": "tcp", "host": "127.0.0.1", "port": 0},
+  "features": ["lua", "glua", "gluac", "javascript", "js", "dap", "incremental-sync"],
+  "dap": {"transport": "tcp", "host": "127.0.0.1", "port": 0, "luaPort": 0, "jsPort": 0},
   "limits": {"maxFileBytes": 16777216, "maxBatchBytes": 67108864}
 }
 ```
@@ -52,8 +52,8 @@ Android 设备连接优先级为：已经验证的无线 ADB、Android 11+ 无�
 | `POST` | `/v1/engine/start` | 仅停止状态允许启动；重复请求返回当前状态 |
 | `POST` | `/v1/engine/restart` | 原子重启并返回新会话 ID |
 | `POST` | `/v1/engine/stop` | 停止当前引擎和活动脚本 |
-| `POST` | `/v1/run` | 运行 Lua、GLua 或 GLuac 入口文件 |
-| `POST` | `/v1/debug` | 创建调试会话并返回 DAP 连接信息 |
+| `POST` | `/v1/run` | 运行 Lua、GLua、GLuac 或 JavaScript 入口文件 |
+| `POST` | `/v1/debug` | 创建调试会话并按 language 返回 Lua 或 JavaScript DAP 连接信息 |
 | `GET` | `/v1/logs` | 按游标增量读取结构化日志 |
 
 所有失败响应采用统一结构：
@@ -71,7 +71,7 @@ Android 设备连接优先级为：已经验证的无线 ADB、Android 11+ 无�
 
 ## 文件面与依赖同步
 
-调试前，扩展解析当前 Lua/GLua 文件的静态 `require` 闭包。动态 require 不猜测目标，必须警告用户并合并项目配置中的额外同步项。
+调试前，扩展解析当前 Lua/GLua 文件的静态 `require` 闭包，或解析 JavaScript 的 `require(...)`、`importModule(...)`、动态 `import(...)` 与静态 `import ... from ...` 依赖。动态依赖不猜测目标，必须警告用户并合并项目配置中的额外同步项。
 
 同步使用项目相对路径和 SHA-256：
 
@@ -92,6 +92,8 @@ Android 设备连接优先级为：已经验证的无线 ADB、Android 11+ 无�
 - `scopes`、`variables`、`setVariable`、`evaluate`
 - `continue`、`pause`、`next`、`stepIn`、`stepOut`
 - `disconnect/terminate`
+
+Lua/GLua 与 JavaScript 使用独立 DAP 监听端口。`/v1/debug` 请求体中的 `language` 为 `javascript` 或入口扩展名为 `.js` 时返回 JavaScript DAP 端口，否则返回 Lua/GLua DAP 端口。JavaScript DAP 由 goja 调试服务提供，支持 CommonJS `require`、Promise 风格 `importModule`、断点、单步、变量展开、暂停态表达式求值和变量写回。
 
 未使用 `gluac -s` 的产物保留源码行信息，可以调试；strip 产物只能运行。源码路径和版本不匹配时，扩展必须拒绝启用断点并提示重新同步。
 
