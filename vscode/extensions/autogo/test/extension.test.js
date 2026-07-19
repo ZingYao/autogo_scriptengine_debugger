@@ -4,8 +4,10 @@ const os = require("os");
 const path = require("path");
 const {
   buildAgArgs,
+  analyzeJavaScriptDependencies,
   analyzeLuaDependencies,
   buildProxyUrl,
+  collectJavaScriptDependencyClosure,
   collectLuaDependencyClosure,
   classifyDeviceAvailability,
   createManifest,
@@ -107,6 +109,30 @@ fs.writeFileSync(path.join(root, "dynamic.lua"), "local name = 'lib.helper'\nret
 const dependencyAnalysis = analyzeLuaDependencies(path.join(root, "dynamic.lua"), root);
 assert.deepStrictEqual(dependencyAnalysis.files.map((file) => path.basename(file)), ["dynamic.lua"]);
 assert.deepStrictEqual(dependencyAnalysis.dynamicRequires, ["dynamic.lua:2"]);
+fs.mkdirSync(path.join(root, "js", "nested"), { recursive: true });
+fs.writeFileSync(path.join(root, "main.js"), [
+  "const math = require('./js/math')",
+  "const helper = importModule('./js/helper')",
+  "import config from './js/config.json'",
+  "import('./js/nested/async')",
+  "const name = './js/dynamic'",
+  "require(name)",
+  "console.log(math, helper, config)",
+].join("\n"));
+fs.writeFileSync(path.join(root, "js", "math.js"), "module.exports = { value: 1 }\n");
+fs.writeFileSync(path.join(root, "js", "helper.js"), "module.exports = { value: 2 }\n");
+fs.writeFileSync(path.join(root, "js", "config.json"), "{\"value\":3}\n");
+fs.writeFileSync(path.join(root, "js", "nested", "async.js"), "module.exports = { value: 4 }\n");
+const jsClosure = collectJavaScriptDependencyClosure(path.join(root, "main.js"), root);
+assert.deepStrictEqual(jsClosure.map((file) => path.relative(root, file).split(path.sep).join("/")), [
+  "main.js",
+  "js/math.js",
+  "js/helper.js",
+  "js/nested/async.js",
+  "js/config.json",
+]);
+const jsDependencyAnalysis = analyzeJavaScriptDependencies(path.join(root, "main.js"), root);
+assert.deepStrictEqual(jsDependencyAnalysis.dynamicRequires, ["main.js:6"]);
 
 const modulePath = "github.com/ZingYao/autogo_scriptengine";
 assert.strictEqual(parseModulePath(`module ${modulePath}\n\ngo 1.25\n`), modulePath);

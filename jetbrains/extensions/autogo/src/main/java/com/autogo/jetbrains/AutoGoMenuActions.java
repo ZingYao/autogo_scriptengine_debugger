@@ -40,20 +40,20 @@ public final class AutoGoMenuActions {
     /** 快速调试当前项目。 */
     public static final class QuickDebugAction extends DumbAwareAction {
         public QuickDebugAction() {
-            super("快速调试", "同步当前 Lua/GLua 依赖并连接移动端 DAP", AutoGoIcons.DEBUG);
+            super("快速调试", "同步当前 Lua/GLua/JavaScript 依赖并连接移动端 DAP", AutoGoIcons.DEBUG);
         }
 
         @Override
         public void actionPerformed(@NotNull AnActionEvent event) {
-            // 根 main.go 是移动端宿主入口；当前 Lua/GLua 文件是本次调试脚本入口。
+            // 根 main.go 是移动端宿主入口；当前脚本文件是本次调试入口。
             if (!validateRootMain(event)) {
                 return;
             }
             Project project = requireProject(event);
             VirtualFile file = AutoGoActionFiles.currentFile(event);
-            if (project == null || file == null || !isLuaFile(file)) {
-                // 快速调试只接受当前 Lua/GLua 文件，不把 Go 或目录误传给脚本引擎。
-                Messages.showErrorDialog(project, "请先打开需要调试的 Lua 或 GLua 文件。", "快速调试");
+            if (project == null || file == null || !isScriptFile(file)) {
+                // 快速调试只接受当前脚本文件，不把 Go 或目录误传给脚本引擎。
+                Messages.showErrorDialog(project, "请先打开需要调试的 Lua、GLua 或 JavaScript 文件。", "快速调试");
                 return;
             }
             FileDocumentManager.getInstance().saveAllDocuments();
@@ -61,10 +61,10 @@ public final class AutoGoMenuActions {
         }
     }
 
-    /** 运行当前 Lua 或 GLua 文件。 */
+    /** 运行当前 Lua、GLua 或 JavaScript 文件。 */
     public static final class RunAction extends DumbAwareAction {
         public RunAction() {
-            super("运行当前 Lua/GLua 文件", "同步当前文件及 require 依赖并在移动端运行", AutoGoIcons.RUN);
+            super("运行当前脚本文件", "同步当前文件及 require/import 依赖并在移动端运行", AutoGoIcons.RUN);
         }
 
         @Override
@@ -75,9 +75,9 @@ public final class AutoGoMenuActions {
             }
             Project project = requireProject(event);
             VirtualFile file = AutoGoActionFiles.currentFile(event);
-            if (project == null || file == null || !isLuaFile(file)) {
+            if (project == null || file == null || !isScriptFile(file)) {
                 // 与 VSCode 一致，F7 不允许回退为 ag run 或执行项目根 Go 入口。
-                Messages.showErrorDialog(project, "请先打开需要运行的 Lua 或 GLua 文件。", "运行当前脚本");
+                Messages.showErrorDialog(project, "请先打开需要运行的 Lua、GLua 或 JavaScript 文件。", "运行当前脚本");
                 return;
             }
             FileDocumentManager.getInstance().saveAllDocuments();
@@ -630,6 +630,13 @@ public final class AutoGoMenuActions {
         // Lua 源码和 GLua 源码共用远程脚本同步与调试协议。
         String extension = file.getExtension();
         return extension != null && ("lua".equalsIgnoreCase(extension) || "glua".equalsIgnoreCase(extension));
+    }
+
+    private static boolean isScriptFile(VirtualFile file) {
+        // JavaScript 复用同一远程同步与 DAP 控制面，但运行时由移动端按 language 分流。
+        String extension = file.getExtension();
+        return extension != null && ("lua".equalsIgnoreCase(extension)
+                || "glua".equalsIgnoreCase(extension) || "js".equalsIgnoreCase(extension));
     }
 
     static List<String> deviceArgs(String action, boolean debug) {

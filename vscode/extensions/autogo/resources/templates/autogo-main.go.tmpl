@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -24,11 +25,15 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/ZingYao/autogo_scriptengine/js_engine"
+	jsmodel "github.com/ZingYao/autogo_scriptengine/js_engine/model"
 	"github.com/ZingYao/autogo_scriptengine/lua_engine"
-	"github.com/ZingYao/autogo_scriptengine/lua_engine/model"
+	luamodel "github.com/ZingYao/autogo_scriptengine/lua_engine/model"
+	gojadap "github.com/dop251/goja/debugger"
 	gruntime "github.com/ZingYao/go-lua-vm/runtime"
 	runtimedap "github.com/ZingYao/go-lua-vm/runtime/dap"
-	"{{MODELS_IMPORT}}"
+	luaall_models "{{LUA_MODELS_IMPORT}}"
+	jsall_models "{{JS_MODELS_IMPORT}}"
 )
 
 const (
@@ -45,13 +50,17 @@ var scriptWorkingDirectoryMu sync.Mutex
 
 type controller struct {
 	mu sync.Mutex
-	engine *lua_engine.LuaEngine
-	dap *runtimedap.Server
-	dapCancel context.CancelFunc
+	luaEngine *lua_engine.LuaEngine
+	jsEngine *js_engine.JSEngine
+	luaDap *runtimedap.Server
+	jsDap *gojadap.Server
+	luaDapCancel context.CancelFunc
+	jsDapCancel context.CancelFunc
 	state string
 	sessionID string
 	manifestID string
 	debugPending bool
+	debugPendingLanguage string
 	lastError string
 	logs []string
 	logBase int
@@ -59,14 +68,16 @@ type controller struct {
 	instanceID string
 	controlPort int
 	dapPort int
+	luaDapPort int
+	jsDapPort int
 	subscribers map[chan string]struct{}
 }
 
 type fileItem struct { Path string `json:"path"`; SHA256 string `json:"sha256"`; Size int64 `json:"size"` }
 type diffRequest struct { ManifestID string `json:"manifestId"`; Files []fileItem `json:"files"` }
 type uploadRequest struct { ManifestID string `json:"manifestId"`; Path string `json:"path"`; SHA256 string `json:"sha256"`; Content string `json:"contentBase64"` }
-type runRequest struct { Entry string `json:"entry"`; ManifestID string `json:"manifestId"` }
-type runtimePID struct { PID int `json:"pid"`; ControlPort int `json:"controlPort"`; DapPort int `json:"dapPort"`; InstanceID string `json:"instanceId"`; StartedAt int64 `json:"startedAt"` }
+type runRequest struct { Entry string `json:"entry"`; ManifestID string `json:"manifestId"`; Language string `json:"language"` }
+type runtimePID struct { PID int `json:"pid"`; ControlPort int `json:"controlPort"`; DapPort int `json:"dapPort"`; LuaDapPort int `json:"luaDapPort,omitempty"`; JSDapPort int `json:"jsDapPort,omitempty"`; InstanceID string `json:"instanceId"`; StartedAt int64 `json:"startedAt"` }
 
 func main() {
 	root := os.Getenv("AUTOGO_REMOTE_ROOT")
@@ -151,22 +162,45 @@ func writeRuntimePID(root string, value runtimePID) error {
 	return nil
 }
 
-func newEngine(observer gruntime.DebugObserver) (*lua_engine.LuaEngine, error) {
+func newLuaEngine(observer gruntime.DebugObserver) (*lua_engine.LuaEngine, error) {
 	config := lua_engine.DefaultConfig()
 	config.AllowProcess = true
 	if ModulePolicy == "ALLOWLIST" { config.WhiteList = append([]string(nil), configuredModules...) }
 	if ModulePolicy == "DENYLIST" { config.BlackList = append([]string(nil), configuredModules...) }
 	config.DebugObserver = observer
 	engine := lua_engine.NewLuaEngine(&config)
-	engine.RegisterModule(selectModules(all_models.AllModules)...)
+	engine.RegisterModule(selectLuaModules(luaall_models.AllModules)...)
 {{CUSTOM_INITIALIZER}}
 	return engine, nil
 }
 
-func selectModules(available []model.Module) []model.Module {
+func newJSEngine(debugger *gojadap.Server) (*js_engine.JSEngine, error) {
+	config := js_engine.DefaultConfig()
+	if ModulePolicy == "ALLOWLIST" { config.WhiteList = append([]string(nil), configuredModules...) }
+	if ModulePolicy == "DENYLIST" { config.BlackList = append([]string(nil), configuredModules...) }
+	config.Debugger = debugger
+	engine := js_engine.NewJSEngine(&config)
+	engine.RegisterModule(selectJSModules(jsall_models.AllModules)...)
+	return engine, nil
+}
+
+func selectLuaModules(available []luamodel.Module) []luamodel.Module {
 	selected := make(map[string]struct{}, len(configuredModules))
 	for _, name := range configuredModules { selected[name] = struct{}{} }
-	result := make([]model.Module, 0, len(available))
+	result := make([]luamodel.Module, 0, len(available))
+	for _, item := range available {
+		_, listed := selected[item.Name()]
+		if ModulePolicy == "ALLOWLIST" && !listed { continue }
+		if ModulePolicy == "DENYLIST" && listed { continue }
+		result = append(result, item)
+	}
+	return result
+}
+
+func selectJSModules(available []jsmodel.Module) []jsmodel.Module {
+	selected := make(map[string]struct{}, len(configuredModules))
+	for _, name := range configuredModules { selected[name] = struct{}{} }
+	result := make([]jsmodel.Module, 0, len(available))
 	for _, item := range available {
 		_, listed := selected[item.Name()]
 		if ModulePolicy == "ALLOWLIST" && !listed { continue }
@@ -185,7 +219,7 @@ func (c *controller) start(w http.ResponseWriter, r *http.Request) {
 func (c *controller) boot(runDefaultEntry bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.engine != nil && c.state != "stopped" && c.state != "failed" { return nil }
+	if (c.luaEngine != nil || c.jsEngine != nil) && c.state != "stopped" && c.state != "failed" { return nil }
 	defaultEntry := ""
 	if runDefaultEntry {
 		defaultEntry = os.Getenv("AUTOGO_SCRIPT_ENTRY")
@@ -194,22 +228,37 @@ func (c *controller) boot(runDefaultEntry bool) error {
 		if resolveErr != nil { return fmt.Errorf("resolve default script entry: %w", resolveErr) }
 		defaultEntry = resolvedEntry
 	}
-	dapServer, err := runtimedap.NewServer("127.0.0.1:0")
+	luaDapServer, err := runtimedap.NewServer("127.0.0.1:0")
 	if err != nil { return err }
-	dapContext, dapCancel := context.WithCancel(context.Background())
-	if err = dapServer.Start(dapContext, nil); err != nil { dapCancel(); return err }
-	dapPort := listenerPortString(dapServer.ActualAddress)
-	if dapPort == 0 { dapCancel(); _ = dapServer.Close(); return errors.New("DAP 服务未返回有效监听端口") }
-	engine, err := newEngine(dapServer)
-	if err != nil { dapCancel(); _ = dapServer.Close(); return err }
-	engine.Start()
-	c.engine, c.state, c.lastError = engine, "running", ""
+	luaDapContext, luaDapCancel := context.WithCancel(context.Background())
+	if err = luaDapServer.Start(luaDapContext, nil); err != nil { luaDapCancel(); return err }
+	luaDapPort := listenerPortString(luaDapServer.ActualAddress)
+	if luaDapPort == 0 { luaDapCancel(); _ = luaDapServer.Close(); return errors.New("Lua DAP 服务未返回有效监听端口") }
+	jsDapServer, err := gojadap.NewServer("127.0.0.1:0")
+	if err != nil { luaDapCancel(); _ = luaDapServer.Close(); return err }
+	jsDapContext, jsDapCancel := context.WithCancel(context.Background())
+	if err = jsDapServer.Start(jsDapContext, nil); err != nil { luaDapCancel(); _ = luaDapServer.Close(); jsDapCancel(); return err }
+	jsDapPort := listenerPortString(jsDapServer.ActualAddress)
+	if jsDapPort == 0 { luaDapCancel(); _ = luaDapServer.Close(); jsDapCancel(); _ = jsDapServer.Close(); return errors.New("JavaScript DAP 服务未返回有效监听端口") }
+	luaEngine, err := newLuaEngine(luaDapServer)
+	if err != nil { luaDapCancel(); _ = luaDapServer.Close(); jsDapCancel(); _ = jsDapServer.Close(); return err }
+	jsEngine, err := newJSEngine(jsDapServer)
+	if err != nil { luaEngine.Close(); luaDapCancel(); _ = luaDapServer.Close(); jsDapCancel(); _ = jsDapServer.Close(); return err }
+	luaEngine.Start()
+	jsEngine.Start()
+	c.luaEngine, c.jsEngine, c.state, c.lastError = luaEngine, jsEngine, "running", ""
 	c.sessionID = fmt.Sprintf("%d", time.Now().UnixNano())
-	c.dap, c.dapCancel, c.dapPort = dapServer, dapCancel, dapPort
-	if err = writeRuntimePID(c.remoteRoot, runtimePID{PID: os.Getpid(), ControlPort: c.controlPort, DapPort: dapPort, InstanceID: c.instanceID, StartedAt: time.Now().UnixMilli()}); err != nil { engine.Stop(); engine.Close(); dapCancel(); _ = dapServer.Close(); c.engine, c.dap, c.dapCancel, c.dapPort = nil, nil, nil, 0; return err }
+	c.luaDap, c.jsDap, c.luaDapCancel, c.jsDapCancel = luaDapServer, jsDapServer, luaDapCancel, jsDapCancel
+	c.luaDapPort, c.jsDapPort, c.dapPort = luaDapPort, jsDapPort, luaDapPort
+	if err = writeRuntimePID(c.remoteRoot, runtimePID{PID: os.Getpid(), ControlPort: c.controlPort, DapPort: luaDapPort, LuaDapPort: luaDapPort, JSDapPort: jsDapPort, InstanceID: c.instanceID, StartedAt: time.Now().UnixMilli()}); err != nil {
+		luaEngine.Stop(); luaEngine.Close(); jsEngine.Stop(); jsEngine.Close()
+		luaDapCancel(); _ = luaDapServer.Close(); jsDapCancel(); _ = jsDapServer.Close()
+		c.luaEngine, c.jsEngine, c.luaDap, c.jsDap, c.luaDapCancel, c.jsDapCancel, c.dapPort, c.luaDapPort, c.jsDapPort = nil, nil, nil, nil, nil, nil, 0, 0, 0
+		return err
+	}
 	c.recordLocked("engine started session=" + c.sessionID)
 	if runDefaultEntry {
-		go c.execute(engine, defaultEntry)
+		go c.executeLua(luaEngine, defaultEntry)
 	}
 	return nil
 }
@@ -230,10 +279,13 @@ func (c *controller) stop(w http.ResponseWriter, r *http.Request) {
 
 func (c *controller) closeEngine() {
 	c.mu.Lock(); defer c.mu.Unlock()
-	if c.dapCancel != nil { c.dapCancel(); c.dapCancel = nil }
-	if c.dap != nil { _ = c.dap.Close(); c.dap = nil }
-	c.dapPort = 0
-	if c.engine != nil { c.engine.Stop(); c.engine.Close(); c.engine = nil }
+	if c.luaDapCancel != nil { c.luaDapCancel(); c.luaDapCancel = nil }
+	if c.jsDapCancel != nil { c.jsDapCancel(); c.jsDapCancel = nil }
+	if c.luaDap != nil { _ = c.luaDap.Close(); c.luaDap = nil }
+	if c.jsDap != nil { _ = c.jsDap.Close(); c.jsDap = nil }
+	c.dapPort, c.luaDapPort, c.jsDapPort = 0, 0, 0
+	if c.luaEngine != nil { c.luaEngine.Stop(); c.luaEngine.Close(); c.luaEngine = nil }
+	if c.jsEngine != nil { c.jsEngine.Stop(); c.jsEngine.Close(); c.jsEngine = nil }
 	c.state = "stopped"
 	c.recordLocked("engine stopped")
 }
@@ -242,13 +294,17 @@ func (c *controller) run(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost { methodNotAllowed(w); return }
 	var request runRequest
 	if err := decodeJSON(r, &request); err != nil { writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err); return }
+	language := normalizeLanguage(request.Language, request.Entry)
 	c.mu.Lock()
-	if c.engine == nil { c.mu.Unlock(); writeError(w, http.StatusConflict, "ENGINE_NOT_RUNNING", errors.New("请先启动移动端脚本引擎")); return }
+	if c.luaEngine == nil || c.jsEngine == nil { c.mu.Unlock(); writeError(w, http.StatusConflict, "ENGINE_NOT_RUNNING", errors.New("请先启动移动端脚本引擎")); return }
 	entry, err := c.resolveEntryLocked(request.ManifestID, request.Entry)
-	engine := c.engine
-	dapServer := c.dap
-	waitForDebugger := c.debugPending
+	luaEngine := c.luaEngine
+	jsEngine := c.jsEngine
+	var dapServer interface { WaitForConfigurationDone(context.Context, time.Duration, io.Writer) error }
+	if language == "javascript" { dapServer = c.jsDap } else { dapServer = c.luaDap }
+	waitForDebugger := c.debugPending && (c.debugPendingLanguage == "" || c.debugPendingLanguage == language)
 	c.debugPending = false
+	c.debugPendingLanguage = ""
 	c.mu.Unlock()
 	if err != nil { writeError(w, http.StatusBadRequest, "INVALID_ENTRY", err); return }
 	if waitForDebugger {
@@ -256,29 +312,50 @@ func (c *controller) run(w http.ResponseWriter, r *http.Request) {
 		if waitErr := dapServer.WaitForConfigurationDone(r.Context(), 5*time.Second, nil); waitErr != nil { writeError(w, http.StatusGatewayTimeout, "DAP_CONFIGURATION_TIMEOUT", waitErr); return }
 	}
 	go func() {
-		c.execute(engine, entry)
+		if language == "javascript" { c.executeJavaScript(jsEngine, entry); return }
+		c.executeLua(luaEngine, entry)
 	}()
-	writeJSON(w, http.StatusAccepted, map[string]any{"state": "running", "entry": entry})
+	writeJSON(w, http.StatusAccepted, map[string]any{"state": "running", "entry": entry, "language": language})
 }
 
-func (c *controller) execute(engine *lua_engine.LuaEngine, entry string) {
+func (c *controller) executeLua(engine *lua_engine.LuaEngine, entry string) {
 	startedAt := time.Now()
 	displayEntry := scriptDisplayPath(entry)
 	c.mu.Lock()
-	if c.engine != engine { c.mu.Unlock(); return }
+	if c.luaEngine != engine { c.mu.Unlock(); return }
 	c.state, c.lastError = "running", ""
 	c.recordLocked("run started: " + entry)
 	c.recordLocked("lua lifecycle: [Info] 开始执行：" + displayEntry)
 	c.mu.Unlock()
-	if runErr := c.executeWithOutputCapture(engine, entry); runErr != nil {
+	if runErr := c.executeLuaWithOutputCapture(engine, entry); runErr != nil {
 		elapsed := time.Since(startedAt).Round(time.Millisecond)
 		detail := detailedLuaError(runErr)
 		summary := firstErrorLine(detail)
-		c.mu.Lock(); if c.engine == engine { c.state, c.lastError = "failed", summary; c.recordLocked("run failed: " + summary); c.recordLocked(fmt.Sprintf("lua lifecycle: [Error] 执行失败：%s，耗时 %s，原因：%s", displayEntry, elapsed, detail)) }; c.mu.Unlock()
+		c.mu.Lock(); if c.luaEngine == engine { c.state, c.lastError = "failed", summary; c.recordLocked("run failed: " + summary); c.recordLocked(fmt.Sprintf("lua lifecycle: [Error] 执行失败：%s，耗时 %s，原因：%s", displayEntry, elapsed, detail)) }; c.mu.Unlock()
 		return
 	}
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
-	c.mu.Lock(); if c.engine == engine { c.state, c.lastError = "running", ""; c.recordLocked("run completed: " + entry); c.recordLocked(fmt.Sprintf("lua lifecycle: [Info] 执行完成：%s，耗时 %s", displayEntry, elapsed)) }; c.mu.Unlock()
+	c.mu.Lock(); if c.luaEngine == engine { c.state, c.lastError = "running", ""; c.recordLocked("run completed: " + entry); c.recordLocked(fmt.Sprintf("lua lifecycle: [Info] 执行完成：%s，耗时 %s", displayEntry, elapsed)) }; c.mu.Unlock()
+}
+
+func (c *controller) executeJavaScript(engine *js_engine.JSEngine, entry string) {
+	startedAt := time.Now()
+	displayEntry := scriptDisplayPath(entry)
+	c.mu.Lock()
+	if c.jsEngine != engine { c.mu.Unlock(); return }
+	c.state, c.lastError = "running", ""
+	c.recordLocked("js run started: " + entry)
+	c.recordLocked("lua lifecycle: [Info] 开始执行 JavaScript：" + displayEntry)
+	c.mu.Unlock()
+	if runErr := c.executeJavaScriptWithOutputCapture(engine, entry); runErr != nil {
+		elapsed := time.Since(startedAt).Round(time.Millisecond)
+		detail := runErr.Error()
+		summary := firstErrorLine(detail)
+		c.mu.Lock(); if c.jsEngine == engine { c.state, c.lastError = "failed", summary; c.recordLocked("js run failed: " + summary); c.recordLocked(fmt.Sprintf("lua lifecycle: [Error] JavaScript 执行失败：%s，耗时 %s，原因：%s", displayEntry, elapsed, detail)) }; c.mu.Unlock()
+		return
+	}
+	elapsed := time.Since(startedAt).Round(time.Millisecond)
+	c.mu.Lock(); if c.jsEngine == engine { c.state, c.lastError = "running", ""; c.recordLocked("js run completed: " + entry); c.recordLocked(fmt.Sprintf("lua lifecycle: [Info] JavaScript 执行完成：%s，耗时 %s", displayEntry, elapsed)) }; c.mu.Unlock()
 }
 
 func scriptDisplayPath(entry string) string { value := filepath.ToSlash(entry); marker := "/releases/"; if index := strings.Index(value, marker); index >= 0 { remainder := value[index+len(marker):]; if slash := strings.Index(remainder, "/"); slash >= 0 && slash+1 < len(remainder) { return remainder[slash+1:] } }; return filepath.Base(entry) }
@@ -303,8 +380,8 @@ func detailedLuaError(err error) string {
 // firstErrorLine 返回适合状态栏展示的错误摘要，完整错误仍写入 Lua 输出区。
 func firstErrorLine(detail string) string { if index := strings.IndexByte(detail, '\n'); index >= 0 { return detail[:index] }; return detail }
 
-// executeWithOutputCapture 仅在 Lua 执行期间接管标准输出，把 print 与 Go 封装 Console 输出写入远程日志。
-func (c *controller) executeWithOutputCapture(engine *lua_engine.LuaEngine, entry string) error {
+// executeLuaWithOutputCapture 仅在 Lua 执行期间接管标准输出，把 print 与 Go 封装 Console 输出写入远程日志。
+func (c *controller) executeLuaWithOutputCapture(engine *lua_engine.LuaEngine, entry string) error {
 	scriptOutputMu.Lock()
 	defer scriptOutputMu.Unlock()
 	reader, writer, err := os.Pipe()
@@ -318,6 +395,28 @@ func (c *controller) executeWithOutputCapture(engine *lua_engine.LuaEngine, entr
 		for scanner.Scan() { c.record("lua output: " + scanner.Text()) }
 	}()
 	runErr := executeScriptFile(engine, entry)
+	os.Stdout = originalStdout
+	_ = writer.Close()
+	<-done
+	_ = reader.Close()
+	return runErr
+}
+
+// executeJavaScriptWithOutputCapture 仅在 JavaScript 执行期间接管标准输出，把 console 与 Go 封装输出写入远程日志。
+func (c *controller) executeJavaScriptWithOutputCapture(engine *js_engine.JSEngine, entry string) error {
+	scriptOutputMu.Lock()
+	defer scriptOutputMu.Unlock()
+	reader, writer, err := os.Pipe()
+	if err != nil { return fmt.Errorf("create script output pipe: %w", err) }
+	originalStdout := os.Stdout
+	os.Stdout = writer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() { c.record("script output: " + scanner.Text()) }
+	}()
+	runErr := executeJavaScriptFile(engine, entry)
 	os.Stdout = originalStdout
 	_ = writer.Close()
 	<-done
@@ -345,12 +444,35 @@ func executeScriptFile(engine *lua_engine.LuaEngine, entry string) error {
 	return nil
 }
 
+// executeJavaScriptFile 通过真实文件入口保持 DAP 源码映射，并让 require 以脚本目录作为相对基准。
+func executeJavaScriptFile(engine *js_engine.JSEngine, entry string) error {
+	scriptWorkingDirectoryMu.Lock()
+	defer scriptWorkingDirectoryMu.Unlock()
+	absoluteEntry, err := filepath.Abs(entry)
+	if err != nil { return fmt.Errorf("resolve script entry: %w", err) }
+	previousDirectory, err := os.Getwd()
+	if err != nil { return fmt.Errorf("read process working directory: %w", err) }
+	directoryPath := filepath.Dir(absoluteEntry)
+	if err := os.Chdir(directoryPath); err != nil { return fmt.Errorf("enter script directory %q: %w", directoryPath, err) }
+	runErr := engine.ExecuteFile(absoluteEntry)
+	restoreErr := os.Chdir(previousDirectory)
+	if runErr != nil { if restoreErr != nil { return fmt.Errorf("%w; restore working directory: %v", runErr, restoreErr) }; return runErr }
+	if restoreErr != nil { return fmt.Errorf("restore working directory: %w", restoreErr) }
+	return nil
+}
+
 func (c *controller) debug(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost { methodNotAllowed(w); return }
+	var request runRequest
+	if err := decodeJSON(r, &request); err != nil { writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err); return }
+	language := normalizeLanguage(request.Language, request.Entry)
 	c.mu.Lock(); defer c.mu.Unlock()
-	if c.engine == nil { writeError(w, http.StatusConflict, "ENGINE_NOT_RUNNING", errors.New("请先启动移动端脚本引擎")); return }
+	if c.luaEngine == nil || c.jsEngine == nil { writeError(w, http.StatusConflict, "ENGINE_NOT_RUNNING", errors.New("请先启动移动端脚本引擎")); return }
 	c.debugPending = true
-	writeJSON(w, http.StatusOK, map[string]any{"sessionId": c.sessionID, "manifestId": c.manifestID, "dap": map[string]any{"transport": "tcp", "host": "127.0.0.1", "port": c.dapPort}})
+	c.debugPendingLanguage = language
+	port := c.luaDapPort
+	if language == "javascript" { port = c.jsDapPort }
+	writeJSON(w, http.StatusOK, map[string]any{"sessionId": c.sessionID, "manifestId": c.manifestID, "language": language, "dap": map[string]any{"transport": "tcp", "host": "127.0.0.1", "port": port}})
 }
 
 func (c *controller) health(w http.ResponseWriter, r *http.Request) {
@@ -361,7 +483,7 @@ func (c *controller) health(w http.ResponseWriter, r *http.Request) {
 func (c *controller) capabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet { methodNotAllowed(w); return }
 	c.mu.Lock(); defer c.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"service": "autogo-script-engine", "instanceId": c.instanceID, "protocolVersion": protocolVersion, "engineVersion": moduleVersion("github.com/ZingYao/autogo_scriptengine"), "runtimeVersion": moduleVersion("github.com/ZingYao/go-lua-vm"), "state": c.state, "features": []string{"lua", "glua", "gluac", "dap", "incremental-sync", "set-variable", "websocket-control"}, "control": map[string]any{"transport": "http+websocket", "host": "127.0.0.1", "port": c.controlPort, "eventsPath": "/v1/events"}, "dap": map[string]any{"transport": "tcp", "host": "127.0.0.1", "port": c.dapPort}, "limits": map[string]any{"maxFileBytes": maxFileBytes, "maxBatchBytes": 4 * maxFileBytes}})
+	writeJSON(w, http.StatusOK, map[string]any{"service": "autogo-script-engine", "instanceId": c.instanceID, "protocolVersion": protocolVersion, "engineVersion": moduleVersion("github.com/ZingYao/autogo_scriptengine"), "runtimeVersion": moduleVersion("github.com/ZingYao/go-lua-vm"), "jsRuntimeVersion": moduleVersion("github.com/dop251/goja"), "state": c.state, "features": []string{"lua", "glua", "gluac", "javascript", "js", "dap", "incremental-sync", "set-variable", "websocket-control"}, "control": map[string]any{"transport": "http+websocket", "host": "127.0.0.1", "port": c.controlPort, "eventsPath": "/v1/events"}, "dap": map[string]any{"transport": "tcp", "host": "127.0.0.1", "port": c.dapPort, "luaPort": c.luaDapPort, "jsPort": c.jsDapPort}, "limits": map[string]any{"maxFileBytes": maxFileBytes, "maxBatchBytes": 4 * maxFileBytes}})
 }
 
 func listenerPortString(address string) int { _, raw, err := net.SplitHostPort(address); if err != nil { return 0 }; port, _ := strconv.Atoi(raw); return port }
@@ -502,11 +624,19 @@ func (c *controller) resolveEntryLocked(manifestID, entry string) (string, error
 	return safeJoin(root, entry)
 }
 
-func (c *controller) writeState(w http.ResponseWriter) { writeJSON(w, http.StatusOK, map[string]any{"service": "autogo-script-engine", "instanceId": c.instanceID, "protocolVersion": protocolVersion, "state": c.state, "sessionId": c.sessionID, "manifestId": c.manifestID, "lastError": c.lastError, "controlPort": c.controlPort, "dapPort": c.dapPort}) }
+func normalizeLanguage(language, entry string) string {
+	value := strings.ToLower(strings.TrimSpace(language))
+	if value == "js" || value == "javascript" { return "javascript" }
+	if value == "lua" || value == "glua" || value == "gluac" { return "lua" }
+	if strings.EqualFold(filepath.Ext(entry), ".js") { return "javascript" }
+	return "lua"
+}
+
+func (c *controller) writeState(w http.ResponseWriter) { writeJSON(w, http.StatusOK, map[string]any{"service": "autogo-script-engine", "instanceId": c.instanceID, "protocolVersion": protocolVersion, "state": c.state, "sessionId": c.sessionID, "manifestId": c.manifestID, "lastError": c.lastError, "controlPort": c.controlPort, "dapPort": c.dapPort, "luaDapPort": c.luaDapPort, "jsDapPort": c.jsDapPort}) }
 func (c *controller) failLocked(w http.ResponseWriter, code string, err error) { c.state, c.lastError = "failed", err.Error(); c.recordLocked(err.Error()); writeError(w, http.StatusInternalServerError, code, err) }
 func (c *controller) record(message string) { c.mu.Lock(); defer c.mu.Unlock(); c.recordLocked(message) }
 func (c *controller) recordLocked(message string) { entry := time.Now().Format(time.RFC3339)+" "+message; c.logs = append(c.logs, entry); if len(c.logs) > 512 { removed := len(c.logs)-512; c.logs = append([]string(nil), c.logs[removed:]...); c.logBase += removed }; c.broadcastLocked(map[string]any{"type": "log", "entry": entry}); log.Print(message) }
-func (c *controller) stateEventLocked(eventType string) string { value, _ := json.Marshal(map[string]any{"type": eventType, "instanceId": c.instanceID, "state": c.state, "sessionId": c.sessionID, "lastError": c.lastError, "dapPort": c.dapPort}); return string(value) }
+func (c *controller) stateEventLocked(eventType string) string { value, _ := json.Marshal(map[string]any{"type": eventType, "instanceId": c.instanceID, "state": c.state, "sessionId": c.sessionID, "lastError": c.lastError, "dapPort": c.dapPort, "luaDapPort": c.luaDapPort, "jsDapPort": c.jsDapPort}); return string(value) }
 func (c *controller) broadcastLocked(value any) { content, err := json.Marshal(value); if err != nil { return }; for subscriber := range c.subscribers { select { case subscriber <- string(content): default: } } }
 
 func validID(value string) error { if value == "" || strings.ContainsAny(value, "/\\") || value == "." || value == ".." { return errors.New("manifestId 无效") }; return nil }

@@ -91,7 +91,7 @@
     <action id="AutoGo.QuickDebug" class="com.autogo.jetbrains.AutoGoMenuActions$QuickDebugAction" text="快速调试">
       <keyboard-shortcut keymap="$default" first-keystroke="F6"/>
     </action>
-    <action id="AutoGo.Run" class="com.autogo.jetbrains.AutoGoMenuActions$RunAction" text="运行当前 Lua/GLua 文件">
+    <action id="AutoGo.Run" class="com.autogo.jetbrains.AutoGoMenuActions$RunAction" text="运行当前脚本文件">
       <keyboard-shortcut keymap="$default" first-keystroke="F7"/>
     </action>
     <action id="AutoGo.Stop" class="com.autogo.jetbrains.AutoGoMenuActions$StopAction" text="停止运行">

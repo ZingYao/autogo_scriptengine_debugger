@@ -93,7 +93,7 @@ final class AutoGoProjectGeneratorTest {
         assertTrue(source.contains("os.Chdir(previousDirectory)"));
         assertTrue(source.contains("执行完成：%s，耗时 %s"));
         assertTrue(source.contains("c.resolveEntryLocked(c.manifestID, defaultEntry)"));
-        assertTrue(source.contains("go c.execute(engine, defaultEntry)"));
+        assertTrue(source.contains("go c.executeLua(luaEngine, defaultEntry)"));
         assertTrue(manifest.contains("\"../../main.go\""));
         assertEquals("console.info(\"AutoGo Script Engine started\")\n",
                 Files.readString(projectRoot.resolve("scripts/main.glua")));
@@ -175,10 +175,14 @@ final class AutoGoProjectGeneratorTest {
     @Test
     void generatedRootMainCompilesAgainstLocalEngine() throws Exception {
         // 本地参考仓库不存在的 CI 环境跳过；当前开发机必须执行真实依赖编译。
+        assumeTrue("1".equals(System.getenv("AUTOGO_RUN_MOBILE_HOST_BUILD_TESTS")),
+                "mobile host build test requires Android/iOS build dependencies");
         Path engine = Path.of("/Users/zing/Documents/SelfProject/GolangProject/autogo_scriptengine");
         assumeTrue(Files.isRegularFile(engine.resolve("go.mod")), "local autogo_scriptengine is unavailable");
-        String source = AutoGoProjectGenerator.renderEngineSource("ios", "ALL", List.of(), false);
+        String source = AutoGoProjectGenerator.renderEngineSource("android", "ALL", List.of(), false);
         Files.writeString(projectRoot.resolve("main.go"), source);
+        Path goja = Path.of("/Users/zing/Documents/goja-debug");
+        assumeTrue(Files.isRegularFile(goja.resolve("go.mod")), "local goja debug fork is unavailable");
         Files.writeString(projectRoot.resolve("go.mod"), """
                 module autogo-generated-entry-test
 
@@ -187,14 +191,19 @@ final class AutoGoProjectGeneratorTest {
                 require github.com/ZingYao/autogo_scriptengine v0.0.0
 
                 replace github.com/ZingYao/autogo_scriptengine => %s
-                """.formatted(engine.toString()));
-        Process tidy = new ProcessBuilder("go", "mod", "tidy")
-                .directory(projectRoot.toFile()).redirectErrorStream(true).start();
+                replace github.com/dop251/goja => %s
+                """.formatted(engine, goja));
+        ProcessBuilder tidyBuilder = new ProcessBuilder("go", "mod", "tidy")
+                .directory(projectRoot.toFile()).redirectErrorStream(true);
+        tidyBuilder.environment().put("CGO_ENABLED", "0");
+        Process tidy = tidyBuilder.start();
         assertTrue(tidy.waitFor(60, TimeUnit.SECONDS), "go mod tidy should complete");
         String tidyOutput = new String(tidy.getInputStream().readAllBytes());
         assertEquals(0, tidy.exitValue(), "go mod tidy failed: " + tidyOutput);
-        Process build = new ProcessBuilder("go", "build", ".")
-                .directory(projectRoot.toFile()).redirectErrorStream(true).start();
+        ProcessBuilder buildBuilder = new ProcessBuilder("go", "build", ".")
+                .directory(projectRoot.toFile()).redirectErrorStream(true);
+        buildBuilder.environment().put("CGO_ENABLED", "0");
+        Process build = buildBuilder.start();
         assertTrue(build.waitFor(60, TimeUnit.SECONDS), "go build should complete");
         String buildOutput = new String(build.getInputStream().readAllBytes());
         assertEquals(0, build.exitValue(), "generated root main.go failed to build: " + buildOutput);
@@ -204,10 +213,14 @@ final class AutoGoProjectGeneratorTest {
     @Test
     void generatedRootMainServesRemoteControlProtocol() throws Exception {
         // 本地引擎缺失时只跳过开发机专属集成测试，常规模板测试仍会执行。
+        assumeTrue("1".equals(System.getenv("AUTOGO_RUN_MOBILE_HOST_BUILD_TESTS")),
+                "mobile host protocol test requires Android/iOS build dependencies");
         Path engine = Path.of("/Users/zing/Documents/SelfProject/GolangProject/autogo_scriptengine");
         assumeTrue(Files.isRegularFile(engine.resolve("go.mod")), "local autogo_scriptengine is unavailable");
         Files.writeString(projectRoot.resolve("main.go"),
-                AutoGoProjectGenerator.renderEngineSource("ios", "ALL", List.of(), false));
+                AutoGoProjectGenerator.renderEngineSource("android", "ALL", List.of(), false));
+        Path goja = Path.of("/Users/zing/Documents/goja-debug");
+        assumeTrue(Files.isRegularFile(goja.resolve("go.mod")), "local goja debug fork is unavailable");
         Files.writeString(projectRoot.resolve("go.mod"), """
                 module autogo-generated-protocol-test
 
@@ -216,15 +229,20 @@ final class AutoGoProjectGeneratorTest {
                 require github.com/ZingYao/autogo_scriptengine v0.0.0
 
                 replace github.com/ZingYao/autogo_scriptengine => %s
-                """.formatted(engine));
-        Process tidy = new ProcessBuilder("go", "mod", "tidy")
-                .directory(projectRoot.toFile()).redirectErrorStream(true).start();
+                replace github.com/dop251/goja => %s
+                """.formatted(engine, goja));
+        ProcessBuilder tidyBuilder = new ProcessBuilder("go", "mod", "tidy")
+                .directory(projectRoot.toFile()).redirectErrorStream(true);
+        tidyBuilder.environment().put("CGO_ENABLED", "0");
+        Process tidy = tidyBuilder.start();
         assertTrue(tidy.waitFor(60, TimeUnit.SECONDS), "protocol host tidy should complete");
         String tidyOutput = new String(tidy.getInputStream().readAllBytes());
         assertEquals(0, tidy.exitValue(), "protocol host tidy failed: " + tidyOutput);
         Path executable = projectRoot.resolve("autogo-protocol-host");
-        Process build = new ProcessBuilder("go", "build", "-o", executable.toString(), ".")
-                .directory(projectRoot.toFile()).redirectErrorStream(true).start();
+        ProcessBuilder buildBuilder = new ProcessBuilder("go", "build", "-o", executable.toString(), ".")
+                .directory(projectRoot.toFile()).redirectErrorStream(true);
+        buildBuilder.environment().put("CGO_ENABLED", "0");
+        Process build = buildBuilder.start();
         assertTrue(build.waitFor(60, TimeUnit.SECONDS), "protocol host build should complete");
         String buildOutput = new String(build.getInputStream().readAllBytes());
         assertEquals(0, build.exitValue(), "protocol host build failed: " + buildOutput);
@@ -250,7 +268,7 @@ final class AutoGoProjectGeneratorTest {
             HttpResponse<String> capabilities = waitForHttp(client, base.resolve("/v1/capabilities"));
             assertEquals(200, capabilities.statusCode());
             AutoGoRemoteEngineService.validateCapabilities(capabilities.body(),
-                    java.util.Set.of("lua", "glua", "gluac", "dap", "incremental-sync"));
+                    java.util.Set.of("lua", "glua", "gluac", "javascript", "js", "dap", "incremental-sync"));
             JsonObject pidMetadata = JsonParser.parseString(
                     Files.readString(projectRoot.resolve("remote/engine.pid.json"))).getAsJsonObject();
             assertEquals(host.pid(), pidMetadata.get("pid").getAsLong());

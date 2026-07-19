@@ -8,7 +8,7 @@ import org.jetbrains.annotations.Nullable;
 
 public final class GluaLineBreakpointType extends XLineBreakpointType<GluaBreakpointProperties> {
     public GluaLineBreakpointType() {
-        super("glua-line-breakpoint", "GLua Line Breakpoint");
+        super("glua-line-breakpoint", "AutoGo Script Line Breakpoint");
     }
 
     @Override
@@ -19,6 +19,7 @@ public final class GluaLineBreakpointType extends XLineBreakpointType<GluaBreakp
     @Override
     public boolean canPutAt(@NotNull VirtualFile file, int line, @NotNull Project project) {
         String extension = file.getExtension();
-        return "glua".equalsIgnoreCase(extension) || "lua".equalsIgnoreCase(extension);
+        return "glua".equalsIgnoreCase(extension) || "lua".equalsIgnoreCase(extension)
+                || "js".equalsIgnoreCase(extension);
     }
 }

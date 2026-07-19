@@ -7,6 +7,7 @@ const { resolveGluacExecutable } = require("./gluals-resolver");
 const { startDapPathProxy } = require("./dap-path-proxy");
 const {
   buildAgArgs,
+  analyzeJavaScriptDependencies,
   analyzeLuaDependencies,
   collectLuaDependencyClosure,
   classifyDeviceAvailability,
@@ -467,7 +468,7 @@ function migrateProjectConfig(document, target) {
   config.entry ??= "scripts/main.glua";
   if (typeof config.entry !== "string") throw new Error("配置字段 entry 必须是项目相对路径字符串");
   config.remote = { mode: "auto", endpoint: "", deviceSerial: configuration().get("defaultDevice", ""), ...(config.remote || {}) };
-  config.sync = { include: ["**/*.lua", "**/*.glua", "**/*.luac"], extraFiles: [], deleteRemoteExtras: false, ...(config.sync || {}) };
+  config.sync = { include: ["**/*.lua", "**/*.glua", "**/*.luac", "**/*.js", "**/*.json"], extraFiles: [], deleteRemoteExtras: false, ...(config.sync || {}) };
   config.debug = { enabled: true, stripGluaBytecode: false, ...(config.debug || {}) };
   return config;
 }
@@ -521,12 +522,16 @@ async function generateProjectHost(root, target, options = {}) {
     const existing = fs.readFileSync(managedCustom, "utf8");
     if (existing.startsWith("// AutoGo managed custom initializer copy.")) fs.rmSync(managedCustom, { force: true });
   }
-  const modelsImport = target === "ios"
+  const luaModelsImport = target === "ios"
     ? "github.com/ZingYao/autogo_scriptengine/lua_engine/define/ios/autogo/all_models"
     : "github.com/ZingYao/autogo_scriptengine/lua_engine/define/android/autogo/all_models";
+  const jsModelsImport = target === "ios"
+    ? "github.com/ZingYao/autogo_scriptengine/js_engine/define/ios/autogo/all_models"
+    : "github.com/ZingYao/autogo_scriptengine/js_engine/define/autogo/all_models";
   const moduleValues = modules.map((name) => `\t${JSON.stringify(name)},`).join("\n");
   const template = fs.readFileSync(bundledResourcePath("resources", "templates", "autogo-main.go.tmpl"), "utf8");
-  const source = template.replaceAll("{{MODELS_IMPORT}}", modelsImport)
+  const source = template.replaceAll("{{LUA_MODELS_IMPORT}}", luaModelsImport)
+    .replaceAll("{{JS_MODELS_IMPORT}}", jsModelsImport)
     .replaceAll("{{MODULE_POLICY}}", policy).replaceAll("{{MODULE_VALUES}}", moduleValues)
     .replaceAll("{{CUSTOM_INITIALIZER}}", customCall);
   const autogo = path.join(root, ".autogo");
@@ -1214,6 +1219,28 @@ async function refreshRemoteDapForward(remote) {
   if (oldLocalPort) await removeAdbForward(remote.device, oldLocalPort);
 }
 
+async function applyDebugDapEndpoint(remote, debugState) {
+  const dap = debugState?.dap || {};
+  const remotePort = Number(dap.port || 0);
+  if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) throw new Error("移动端调试响应未返回有效 DAP 端口");
+  const endpointHost = new URL(remote.endpoint).hostname;
+  const dapHost = ["127.0.0.1", "localhost", "::1"].includes(dap.host) ? endpointHost : (dap.host || endpointHost);
+  if (remote.direct) {
+    remote.dapHost = dapHost;
+    remote.dapPort = remotePort;
+    remote.remoteDapPort = remotePort;
+    return;
+  }
+  if (remote.remoteDapPort === remotePort && remote.dapPort) return;
+  const oldLocalPort = remote.dapPort;
+  const localPort = await adbForward(remote.device, remotePort);
+  remote.dapHost = "127.0.0.1";
+  remote.dapPort = localPort;
+  remote.remoteDapPort = remotePort;
+  remote.forwardedPorts = (remote.forwardedPorts || []).filter((port) => port !== oldLocalPort).concat(localPort);
+  if (oldLocalPort) await removeAdbForward(remote.device, oldLocalPort);
+}
+
 async function operateRemoteEngineOnce(forceRestart) {
   const root = workspaceRoot();
   const configPath = path.join(root, ".autogo", "engine.json");
@@ -1309,10 +1336,38 @@ async function syncFiles(files) {
   return { remote, manifest };
 }
 
+function scriptLanguageForFile(file) {
+  if (/\.(lua|glua)$/i.test(file)) return "lua";
+  if (/\.js$/i.test(file)) return "javascript";
+  return "";
+}
+
+function activeScriptFile() {
+  const file = vscode.window.activeTextEditor?.document.uri.fsPath;
+  if (!file || !scriptLanguageForFile(file)) throw new Error("当前文件必须是 .lua、.glua 或 .js");
+  return file;
+}
+
 function activeLuaFile() {
   const file = vscode.window.activeTextEditor?.document.uri.fsPath;
   if (!file || !/\.(lua|glua)$/i.test(file)) throw new Error("当前文件必须是 .lua 或 .glua");
   return file;
+}
+
+function analyzeScriptDependencies(entry, root) {
+  const language = scriptLanguageForFile(entry);
+  if (language === "javascript") return analyzeJavaScriptDependencies(entry, root);
+  return analyzeLuaDependencies(entry, root);
+}
+
+function requiredRuntimeFeatures(language, debug = false) {
+  return language === "javascript"
+    ? ["javascript", "js", "incremental-sync", ...(debug ? ["dap"] : [])]
+    : ["lua", "glua", "incremental-sync", ...(debug ? ["dap"] : [])];
+}
+
+function scriptLanguageLabel(language) {
+  return language === "javascript" ? "JavaScript" : "Lua/GLua";
 }
 
 async function quickDebug() {
@@ -1321,17 +1376,20 @@ async function quickDebug() {
   if (!await confirmRunPrerequisites("调试")) return;
   // 引擎按需启动可能临时展示 AG 输出；准备完成后运行态始终回到 Lua 分区。
   consoleViewProvider?.activateChannel("lua");
-  const entry = activeLuaFile();
+  const entry = activeScriptFile();
+  const language = scriptLanguageForFile(entry);
   await vscode.window.activeTextEditor.document.save();
   const root = workspaceRoot();
-  const graph = analyzeLuaDependencies(entry, root);
-  if (graph.dynamicRequires.length) extensionOutput.appendLine(`[Warn] 发现动态 require：${graph.dynamicRequires.join("、")}；请通过 sync.extraFiles 补充依赖。`);
+  const graph = analyzeScriptDependencies(entry, root);
+  if (graph.dynamicRequires.length) extensionOutput.appendLine(`[Warn] 发现动态脚本依赖：${graph.dynamicRequires.join("、")}；请通过 sync.extraFiles 补充依赖。`);
   const files = await mergeConfiguredExtraFiles(graph.files);
   const { remote, manifest } = await syncFiles(files);
-  requireRemoteFeatures(remote, ["lua", "glua", "dap", "incremental-sync"]);
+  requireRemoteFeatures(remote, requiredRuntimeFeatures(language, true));
   await restartRemoteEngine(remote);
   consoleViewProvider?.activateChannel("lua");
-  await requestJson(remote.endpoint, "POST", "/v1/debug", {}, remote);
+  const relativeEntry = path.relative(root, entry).split(path.sep).join("/");
+  const debugState = await requestJson(remote.endpoint, "POST", "/v1/debug", { language, entry: relativeEntry, manifestId: manifest.id }, remote);
+  await applyDebugDapEndpoint(remote, debugState);
   const remoteTempDir = configuration().get("remoteTempDir", "/data/local/tmp").replace(/\/$/, "");
   const remoteRoot = `${remoteTempDir}/.autogo/remote/releases/${manifest.id}`;
   extensionOutput.appendLine(`[Debug] 远程脚本目录：${remoteRoot}`);
@@ -1359,17 +1417,17 @@ async function quickDebug() {
   });
   dapProxies.add(proxy);
   const started = await vscode.debug.startDebugging(undefined, {
-    type: "glua", request: "attach", name: "AutoGo GLua Remote Debug",
+    type: "glua", request: "attach", name: `AutoGo ${scriptLanguageLabel(language)} Remote Debug`,
     host: proxy.host, port: proxy.port, internalConsoleOptions: "neverOpen",
   });
-  if (!started) { proxy.close(); dapProxies.delete(proxy); throw new Error("VSCode 未能启动 GLua DAP 会话"); }
+  if (!started) { proxy.close(); dapProxies.delete(proxy); throw new Error(`VSCode 未能启动 ${scriptLanguageLabel(language)} DAP 会话`); }
   extensionOutput.appendLine(`[Debug] DAP 已连接：${proxy.host}:${proxy.port}`);
   await startRemoteLogPolling(remote, async () => {
     const session = vscode.debug.activeDebugSession;
     if (session?.type === "glua") await vscode.debug.stopDebugging(session);
   });
-  await requestJson(remote.endpoint, "POST", "/v1/run", { entry: path.relative(root, entry).split(path.sep).join("/"), manifestId: manifest.id }, remote);
-  extensionOutput.appendLine(`[Debug] 已启动调试脚本：${path.relative(root, entry).split(path.sep).join("/")}`);
+  await requestJson(remote.endpoint, "POST", "/v1/run", { entry: relativeEntry, manifestId: manifest.id, language }, remote);
+  extensionOutput.appendLine(`[Debug] 已启动 ${scriptLanguageLabel(language)} 调试脚本：${relativeEntry}`);
 }
 
 async function remoteRunCurrent(debug = false) {
@@ -1378,18 +1436,20 @@ async function remoteRunCurrent(debug = false) {
   consoleViewProvider?.activateChannel("lua");
   if (!await confirmRunPrerequisites("运行脚本")) return;
   consoleViewProvider?.activateChannel("lua");
-  const entry = activeLuaFile();
+  const entry = activeScriptFile();
+  const language = scriptLanguageForFile(entry);
   await vscode.window.activeTextEditor.document.save();
   const root = workspaceRoot();
-  const graph = analyzeLuaDependencies(entry, root);
-  if (graph.dynamicRequires.length) extensionOutput.appendLine(`[Warn] 发现动态 require：${graph.dynamicRequires.join("、")}；请通过 sync.extraFiles 补充依赖。`);
+  const graph = analyzeScriptDependencies(entry, root);
+  if (graph.dynamicRequires.length) extensionOutput.appendLine(`[Warn] 发现动态脚本依赖：${graph.dynamicRequires.join("、")}；请通过 sync.extraFiles 补充依赖。`);
   const { remote, manifest } = await syncFiles(await mergeConfiguredExtraFiles(graph.files));
-  requireRemoteFeatures(remote, ["lua", "glua", "incremental-sync"]);
+  requireRemoteFeatures(remote, requiredRuntimeFeatures(language, false));
   await ensureRemoteEngineRunning(remote);
   consoleViewProvider?.activateChannel("lua");
   await startRemoteLogPolling(remote);
-  await requestJson(remote.endpoint, "POST", "/v1/run", { entry: path.relative(root, entry).split(path.sep).join("/"), manifestId: manifest.id }, remote);
-  extensionOutput.appendLine(`[Info] Lua 任务已启动：${path.relative(root, entry).split(path.sep).join("/")}`);
+  const relativeEntry = path.relative(root, entry).split(path.sep).join("/");
+  await requestJson(remote.endpoint, "POST", "/v1/run", { entry: relativeEntry, manifestId: manifest.id, language }, remote);
+  extensionOutput.appendLine(`[Info] ${scriptLanguageLabel(language)} 任务已启动：${relativeEntry}`);
 }
 
 async function compileGluac(remoteRun, remoteDebug) {

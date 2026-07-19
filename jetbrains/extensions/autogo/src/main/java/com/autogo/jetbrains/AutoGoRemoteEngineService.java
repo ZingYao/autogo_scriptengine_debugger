@@ -39,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -219,6 +220,7 @@ public final class AutoGoRemoteEngineService implements Disposable {
     public void syncAndRun(Path entryFile, boolean debug) {
         // 运行切换到 Lua 分区；Debug 由原生控制台接管，只在后台清空并保留 AutoGo Lua 副本。
         console.clear(AutoGoConsoleService.Channel.LUA);
+        String language = scriptLanguage(entryFile);
         String preparation = (debug ? "准备调试：" : "准备运行：") + entryFile.toAbsolutePath().normalize();
         if (debug) {
             console.infoWithoutShowing(AutoGoConsoleService.Channel.LUA, preparation);
@@ -239,18 +241,20 @@ public final class AutoGoRemoteEngineService implements Disposable {
             }
             Path root = Path.of(basePath).toAbsolutePath().normalize();
             try {
-                GluaDependencyGraph.Result graph = GluaDependencyGraph.resolve(root, entryFile);
+                GluaDependencyGraph.Result graph = "javascript".equals(language)
+                        ? resolveJavaScriptDependencies(root, entryFile)
+                        : GluaDependencyGraph.resolve(root, entryFile);
                 List<Path> syncFiles = mergeExtraFiles(root, graph.files());
                 if (!graph.dynamicRequires().isEmpty()) {
                     // 动态 require 不能猜测，明确提示用户通过项目 extraFiles 补充。
-                    console.error("发现动态 require，无法自动确定依赖："
+                    console.error("发现动态脚本依赖，无法自动确定依赖："
                             + String.join("、", graph.dynamicRequires())
                             + "；请在 .autogo/engine.json 的 sync.extraFiles 中补充文件。");
                 }
-                syncGraph(root, entryFile.toAbsolutePath().normalize(), syncFiles, debug);
+                syncGraph(root, entryFile.toAbsolutePath().normalize(), syncFiles, debug, language);
             } catch (IOException error) {
                 // 依赖图读取失败时不上传不完整 manifest。
-                console.error("解析 GLua 依赖图失败：" + error.getMessage());
+                console.error("解析脚本依赖图失败：" + error.getMessage());
             }
         });
     }
@@ -290,7 +294,7 @@ public final class AutoGoRemoteEngineService implements Disposable {
                     console.error("GLuac 源码包含动态 require：" + String.join("、", graph.dynamicRequires())
                             + "；请通过 sync.extraFiles 补充依赖。");
                 }
-                syncGraph(root, normalizedArtifact, List.copyOf(files), debug);
+                syncGraph(root, normalizedArtifact, List.copyOf(files), debug, "lua");
             } catch (IOException error) {
                 // 版本、路径或依赖图不完整时禁止上传字节码。
                 console.error("准备 GLuac 远程运行失败：" + error.getMessage());
@@ -353,6 +357,93 @@ public final class AutoGoRemoteEngineService implements Disposable {
     static boolean isRunningState(String state) {
         // paused 仍表示引擎和控制通道存在，后续动作可按需要 restart。
         return "running".equals(state) || "paused".equals(state);
+    }
+
+    private static String scriptLanguage(Path entryFile) {
+        String name = entryFile.getFileName() == null ? "" : entryFile.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".js") ? "javascript" : "lua";
+    }
+
+    private static String scriptLabel(String language) {
+        return "javascript".equals(language) ? "JavaScript" : "GLua";
+    }
+
+    private static GluaDependencyGraph.Result resolveJavaScriptDependencies(Path projectRoot, Path entryFile)
+            throws IOException {
+        Path root = projectRoot.toAbsolutePath().normalize();
+        Path entry = entryFile.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(entry) || !entry.startsWith(root)) {
+            throw new IOException("入口文件必须位于项目根目录内：" + entry);
+        }
+        LinkedHashSet<Path> files = new LinkedHashSet<>();
+        List<String> dynamicRequires = new ArrayList<>();
+        List<Path> pending = new ArrayList<>();
+        pending.add(entry);
+        Pattern callPattern = Pattern.compile("\\b(?:require|importModule|import)\\s*\\(\\s*([^)]*)\\)");
+        Pattern importPattern = Pattern.compile("\\bimport\\s+(?:[^\"'()]+?\\s+from\\s*)?[\"']([^\"']+)[\"']");
+        for (int cursor = 0; cursor < pending.size(); cursor++) {
+            Path current = pending.get(cursor).toAbsolutePath().normalize();
+            if (!current.startsWith(root) || !files.add(current)) {
+                continue;
+            }
+            if (!current.toString().toLowerCase(Locale.ROOT).matches(".*\\.(js|json)$")) {
+                continue;
+            }
+            String source = Files.readString(current, StandardCharsets.UTF_8);
+            Matcher calls = callPattern.matcher(source);
+            while (calls.find()) {
+                String argument = calls.group(1) == null ? "" : calls.group(1).trim();
+                Matcher literal = Pattern.compile("^[\"']([^\"']+)[\"']\\s*$").matcher(argument);
+                if (!literal.matches()) {
+                    dynamicRequires.add(root.relativize(current).toString().replace('\\', '/')
+                            + ":" + lineAt(source, calls.start()));
+                    continue;
+                }
+                Path resolved = resolveJavaScriptModule(root, current, literal.group(1));
+                if (resolved != null) {
+                    pending.add(resolved);
+                }
+            }
+            Matcher imports = importPattern.matcher(source);
+            while (imports.find()) {
+                Path resolved = resolveJavaScriptModule(root, current, imports.group(1));
+                if (resolved != null) {
+                    pending.add(resolved);
+                }
+            }
+        }
+        return new GluaDependencyGraph.Result(List.copyOf(files), List.copyOf(new LinkedHashSet<>(dynamicRequires)));
+    }
+
+    private static Path resolveJavaScriptModule(Path root, Path current, String specifier) {
+        String value = specifier == null ? "" : specifier.trim();
+        if (value.isEmpty()) {
+            return null;
+        }
+        Path base = (value.startsWith(".") || value.startsWith("/"))
+                ? current.getParent().resolve(value).normalize()
+                : root.resolve(value).normalize();
+        for (Path candidate : List.of(
+                base,
+                Path.of(base.toString() + ".js"),
+                Path.of(base.toString() + ".json"),
+                base.resolve("index.js"),
+                base.resolve("index.json"))) {
+            if (candidate.startsWith(root) && Files.isRegularFile(candidate)) {
+                return candidate.toAbsolutePath().normalize();
+            }
+        }
+        return null;
+    }
+
+    private static int lineAt(String source, int offset) {
+        int line = 1;
+        for (int index = 0; index < Math.min(offset, source.length()); index++) {
+            if (source.charAt(index) == '\n') {
+                line++;
+            }
+        }
+        return line;
     }
 
     private void showExecutionError(String message) {
@@ -426,7 +517,7 @@ public final class AutoGoRemoteEngineService implements Disposable {
         }
     }
 
-    private void syncGraph(Path root, Path entry, List<Path> files, boolean debug) throws IOException {
+    private void syncGraph(Path root, Path entry, List<Path> files, boolean debug, String language) throws IOException {
         // manifest 使用稳定路径顺序和内容哈希，保证相同源码得到相同 ID。
         Map<String, byte[]> contentByPath = new LinkedHashMap<>();
         StringBuilder manifestSeed = new StringBuilder();
@@ -499,7 +590,7 @@ public final class AutoGoRemoteEngineService implements Disposable {
             console.error("提交远端脚本版本失败：" + commit.message());
             return;
         }
-        console.info("GLua 增量同步完成：manifest=" + manifestID + "，上传 " + uploads.size()
+        console.info(scriptLabel(language) + " 增量同步完成：manifest=" + manifestID + "，上传 " + uploads.size()
                 + "/" + files.size() + " 个文件。");
         // Debug 需要干净 VM；普通 F7 复用运行中的引擎，避免每次重建 DAP 和端口转发。
         HttpResult currentEngine = request("GET", "/v1/health", "{}");
@@ -524,12 +615,17 @@ public final class AutoGoRemoteEngineService implements Disposable {
         }
         String relativeEntry = root.relativize(entry).toString().replace('\\', '/');
         String runBody = "{\"entry\":\"" + jsonEscape(relativeEntry)
-                + "\",\"manifestId\":\"" + manifestID + "\"}";
+                + "\",\"manifestId\":\"" + manifestID
+                + "\",\"language\":\"" + jsonEscape(language) + "\"}";
         primeRemoteLogCursor();
         if (debug) {
             HttpResult debugSession = request("POST", "/v1/debug", runBody);
             if (!debugSession.success()) {
                 console.error("创建远程调试会话失败：" + debugSession.message());
+                return;
+            }
+            if (!activateDebugDapEndpoint(debugSession.body())) {
+                console.error("创建远程调试会话失败：无法连接语言对应的 DAP 端口");
                 return;
             }
             // 先让 IDEA 原生 XDebugger 完成 initialize/attach/断点同步，再启动脚本。
@@ -551,7 +647,7 @@ public final class AutoGoRemoteEngineService implements Disposable {
         HttpResult run = request("POST", "/v1/run", runBody);
         if (!run.success()) {
             finishAutoGoDebugSession();
-            console.error("远程执行 GLua 失败：" + run.message());
+            console.error("远程执行 " + scriptLabel(language) + " 失败：" + run.message());
             return;
         }
         console.info((debug ? "远程调试脚本已启动：" : "远程脚本已启动：") + relativeEntry);
@@ -954,6 +1050,31 @@ public final class AutoGoRemoteEngineService implements Disposable {
         }
     }
 
+    private boolean activateDebugDapEndpoint(String debugBody) {
+        int remoteDapPort = parseDapPort(debugBody, 0);
+        if (remoteDapPort <= 0) {
+            return false;
+        }
+        if (directConnection) {
+            activeDapHost = activeControlBase.getHost();
+            activeDapPort = remoteDapPort;
+            return true;
+        }
+        String serial = AutoGoMenuActions.selectedDevice(project);
+        if (serial.isBlank()) {
+            return false;
+        }
+        String configuredAdb = AutoGoMenuActions.settings().getAdbPath();
+        String adb = configuredAdb.isBlank() ? "adb" : configuredAdb;
+        removeForwardPort(adb, serial, localPorts.dap());
+        if (!forwardPort(adb, serial, localPorts.dap(), remoteDapPort)) {
+            return false;
+        }
+        activeDapHost = "127.0.0.1";
+        activeDapPort = localPorts.dap();
+        return true;
+    }
+
     /** 校验控制面协议主版本及扩展执行链依赖的能力集合。 */
     static void validateCapabilities(String responseBody, Set<String> requiredFeatures) throws IOException {
         // JSON 结构缺失或类型错误必须视为不兼容，不能猜测服务端行为。
@@ -1174,6 +1295,29 @@ public final class AutoGoRemoteEngineService implements Disposable {
                 if (cleanup != null && cleanup.isAlive()) {
                     cleanup.destroyForcibly();
                 }
+            }
+        }
+    }
+
+    private void removeForwardPort(String adb, String serial, int localPort) {
+        // 切换语言 DAP 端口时只能清理调试端口，控制端口必须保持在线。
+        if (serial == null || serial.isBlank() || localPort <= 0) {
+            return;
+        }
+        Process cleanup = null;
+        try {
+            cleanup = new ProcessBuilder(adb, "-s", serial, "forward", "--remove", "tcp:" + localPort)
+                    .redirectErrorStream(true).start();
+            if (!cleanup.waitFor(2, TimeUnit.SECONDS)) {
+                cleanup.destroyForcibly();
+            }
+        } catch (IOException | InterruptedException ignored) {
+            if (ignored instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+        } finally {
+            if (cleanup != null && cleanup.isAlive()) {
+                cleanup.destroyForcibly();
             }
         }
     }

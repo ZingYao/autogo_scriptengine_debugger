@@ -192,7 +192,7 @@ public final class AutoGoProjectGenerator {
                 + "  \"modules\": [" + moduleJson + "],\n"
                 + "  \"customInitializer\": \"" + jsonEscape(customPath) + "\",\n"
                 + "  \"remote\": {\"mode\": \"auto\", \"endpoint\": \"\", \"deviceSerial\": \"\"},\n"
-                + "  \"sync\": {\"extraFiles\": [], \"deleteRemoteExtras\": false},\n"
+                + "  \"sync\": {\"include\": [\"**/*.lua\", \"**/*.glua\", \"**/*.luac\", \"**/*.js\", \"**/*.json\"], \"extraFiles\": [], \"deleteRemoteExtras\": false},\n"
                 + "  \"debug\": {\"enabled\": true, \"stripGluaBytecode\": false}\n"
                 + "}\n";
     }
@@ -245,15 +245,19 @@ public final class AutoGoProjectGenerator {
         for (String module : modules) {
             moduleValues.append("\t\"").append(goEscape(module)).append("\",\n");
         }
-        String modelsImport = "ios".equalsIgnoreCase(target)
+        String luaModelsImport = "ios".equalsIgnoreCase(target)
                 ? "github.com/ZingYao/autogo_scriptengine/lua_engine/define/ios/autogo/all_models"
                 : "github.com/ZingYao/autogo_scriptengine/lua_engine/define/android/autogo/all_models";
+        String jsModelsImport = "ios".equalsIgnoreCase(target)
+                ? "github.com/ZingYao/autogo_scriptengine/js_engine/define/ios/autogo/all_models"
+                : "github.com/ZingYao/autogo_scriptengine/js_engine/define/autogo/all_models";
         String customCall = hasCustomInitializer
                 ? "\tif err := customInitialize(engine); err != nil { engine.Close(); return nil, fmt.Errorf(\"custom initialize: %w\", err) }"
                 : "";
         String template = readTemplate("/templates/autogo-main.go.tmpl");
         return template
-                .replace("{{MODELS_IMPORT}}", modelsImport)
+                .replace("{{LUA_MODELS_IMPORT}}", luaModelsImport)
+                .replace("{{JS_MODELS_IMPORT}}", jsModelsImport)
                 .replace("{{MODULE_POLICY}}", goEscape(policy))
                 .replace("{{MODULE_VALUES}}", moduleValues.toString().stripTrailing())
                 .replace("{{CUSTOM_INITIALIZER}}", customCall);

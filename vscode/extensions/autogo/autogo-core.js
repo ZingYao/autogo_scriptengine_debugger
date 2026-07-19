@@ -128,7 +128,7 @@ function inspectInitializedProject(root) {
     const entry = String(config.entry || "scripts/main.glua").trim();
     const resolvedEntry = entry && !path.isAbsolute(entry) ? path.resolve(root, entry) : "";
     if (!resolvedEntry || !resolvedEntry.startsWith(path.resolve(root) + path.sep)
-      || !/\.(?:lua|glua)$/i.test(resolvedEntry) || !fs.existsSync(resolvedEntry) || !fs.statSync(resolvedEntry).isFile()) {
+      || !/\.(?:lua|glua|js)$/i.test(resolvedEntry) || !fs.existsSync(resolvedEntry) || !fs.statSync(resolvedEntry).isFile()) {
       missing.push(entry || "scripts/main.glua");
     }
   }
@@ -255,6 +255,63 @@ function analyzeLuaDependencies(entry, root, read = fs.readFileSync, exists = fs
 
 function collectLuaDependencyClosure(entry, root, read = fs.readFileSync, exists = fs.existsSync) {
   return analyzeLuaDependencies(entry, root, read, exists).files;
+}
+
+function resolveJavaScriptDependency(fromFile, root, specifier, exists = fs.existsSync) {
+  const value = String(specifier || "").trim();
+  if (!value) return undefined;
+  const base = value.startsWith(".") || value.startsWith("/")
+    ? path.resolve(path.dirname(fromFile), value)
+    : path.resolve(root, value);
+  const candidates = [
+    base,
+    `${base}.js`,
+    `${base}.json`,
+    path.join(base, "index.js"),
+    path.join(base, "index.json"),
+  ];
+  return candidates.find((candidate) => exists(candidate));
+}
+
+function analyzeJavaScriptDependencies(entry, root, read = fs.readFileSync, exists = fs.existsSync) {
+  const result = [];
+  const dynamicRequires = [];
+  const visited = new Set();
+  function lineFor(source, index) {
+    return source.slice(0, index).split(/\r?\n/).length;
+  }
+  function visit(file) {
+    const absolute = path.resolve(file);
+    if (visited.has(absolute)) return;
+    if (!absolute.startsWith(path.resolve(root) + path.sep) && absolute !== path.resolve(root)) throw new Error(`JavaScript 依赖路径逃逸工作区：${absolute}`);
+    if (!exists(absolute)) throw new Error(`JavaScript 依赖不存在：${absolute}`);
+    visited.add(absolute);
+    result.push(absolute);
+    if (!/\.(?:js|json)$/i.test(absolute)) return;
+    const source = read(absolute, "utf8");
+    const callRegex = /\b(?:require|importModule|import)\s*\(\s*([^)]*)\)/g;
+    for (const match of source.matchAll(callRegex)) {
+      const argument = String(match[1] || "").trim();
+      const literal = argument.match(/^["']([^"']+)["']\s*$/);
+      if (!literal) {
+        dynamicRequires.push(`${normalizeRelative(root, absolute)}:${lineFor(source, match.index)}`);
+        continue;
+      }
+      const resolved = resolveJavaScriptDependency(absolute, root, literal[1], exists);
+      if (resolved) visit(resolved);
+    }
+    const importRegex = /\bimport\s+(?:[^"'()]+?\s+from\s*)?["']([^"']+)["']/g;
+    for (const match of source.matchAll(importRegex)) {
+      const resolved = resolveJavaScriptDependency(absolute, root, match[1], exists);
+      if (resolved) visit(resolved);
+    }
+  }
+  visit(entry);
+  return { files: result, dynamicRequires: [...new Set(dynamicRequires)] };
+}
+
+function collectJavaScriptDependencyClosure(entry, root, read = fs.readFileSync, exists = fs.existsSync) {
+  return analyzeJavaScriptDependencies(entry, root, read, exists).files;
 }
 
 function createManifest(files, root) {
@@ -442,7 +499,9 @@ module.exports = {
   TOOL_CANDIDATES,
   buildAgArgs,
   buildProxyUrl,
+  analyzeJavaScriptDependencies,
   analyzeLuaDependencies,
+  collectJavaScriptDependencyClosure,
   collectLuaDependencyClosure,
   classifyDeviceAvailability,
   isChildProcessRunning,

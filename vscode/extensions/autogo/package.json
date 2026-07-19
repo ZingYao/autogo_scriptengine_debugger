@@ -39,8 +39,10 @@
   "activationEvents": [
     "onLanguage:glua",
     "onLanguage:lua",
+    "onLanguage:javascript",
     "workspaceContains:**/*.glua",
     "workspaceContains:**/*.lua",
+    "workspaceContains:**/*.js",
     "onCommand:glua.openBuiltinSignatureJson",
     "onCommand:glua.showBuiltinDocStatus",
     "onCommand:glua.startAttachDebug",
@@ -142,7 +144,7 @@
       },
       {
         "command": "autogo.run",
-        "title": "AutoGo: 运行当前 Lua/GLua 文件",
+        "title": "AutoGo: 运行当前脚本文件",
         "icon": {
           "light": "resources/icons/run.svg",
           "dark": "resources/icons/run.svg"
@@ -576,10 +578,11 @@
     "debuggers": [
       {
         "type": "glua",
-        "label": "GLua",
+        "label": "AutoGo Script",
         "languages": [
           "glua",
-          "lua"
+          "lua",
+          "javascript"
         ],
         "configurationAttributes": {
           "attach": {
@@ -733,6 +736,9 @@
       },
       {
         "language": "lua"
+      },
+      {
+        "language": "javascript"
       }
     ],
     "languages": [

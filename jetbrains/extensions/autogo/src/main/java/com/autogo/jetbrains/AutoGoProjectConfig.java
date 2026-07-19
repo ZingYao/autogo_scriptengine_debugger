@@ -133,6 +133,13 @@ final class AutoGoProjectConfig {
     private static JsonObject defaultSync() {
         // 默认只上传依赖闭包，不删除设备端旧版本文件。
         JsonObject sync = new JsonObject();
+        JsonArray include = new JsonArray();
+        include.add("**/*.lua");
+        include.add("**/*.glua");
+        include.add("**/*.luac");
+        include.add("**/*.js");
+        include.add("**/*.json");
+        sync.add("include", include);
         sync.add("extraFiles", new JsonArray());
         sync.addProperty("deleteRemoteExtras", false);
         return sync;
