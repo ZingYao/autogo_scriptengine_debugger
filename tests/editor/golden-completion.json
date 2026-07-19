@@ -1,0 +1,373 @@
+{
+  "files": {
+    "app/completion_module.lua": "local M = {}\n-- description: print many times\n-- param: name string user name\n-- param: times number repeat count\nM.timesPrint = function(name, times) end\nfunction M.dotCall(value) end\n-- description: call with self\n-- param: value string payload\n-- return: string result\nfunction M:colonCall(value) end\nM['bracketCall'] = function() end\nreturn M\n",
+    "app/literal_completion.lua": "local M = { literalCall = function() end, ['indexedLiteral'] = function() end, plainValue = true }\nreturn M\n",
+    "app/const_completion.lua": "local M = {}\nM._glua_const = { a = 1, b = 2 }\nM.mutable = 3\nreturn M\n",
+    "app/non_function_completion.lua": "local M = { ccc = true, value = 1 }\nreturn M\n",
+    "app/private_completion.lua": "local Private = {}\nPrivate.hidden = function() end\nlocal Public = {}\nPublic.visible = function() end\nreturn Public\n"
+  },
+  "cases": [
+    {
+      "name": "numeric for variable completion",
+      "kind": "file-symbol",
+      "source": "local total = 0\nfor i = 1, 3 do\n  \nend\n",
+      "marker": "  \nend",
+      "expected": [
+        "i",
+        "total"
+      ]
+    },
+    {
+      "name": "generic for variables completion",
+      "kind": "file-symbol",
+      "source": "local values = {}\nfor a, d in pairs(values) do\n  \nend\n",
+      "marker": "  \nend",
+      "expected": [
+        "a",
+        "d",
+        "values"
+      ]
+    },
+    {
+      "name": "function parameter and local completion",
+      "kind": "file-symbol",
+      "source": "local prefix = 'hello'\nlocal function greet(name)\n  local suffix = '!'\n  \nend\n",
+      "marker": "  \nend",
+      "expected": [
+        "greet",
+        "name",
+        "prefix",
+        "suffix"
+      ],
+      "detailContains": {
+        "greet": "greet(name)"
+      },
+      "insertTextContains": {
+        "greet": "greet(${1:name})"
+      }
+    },
+    {
+      "name": "for statement do keyword completion",
+      "kind": "keyword",
+      "source": "for i = 1, 100 d\n",
+      "marker": "d\n",
+      "expected": [
+        "do"
+      ],
+      "notExpected": [
+        "dofile",
+        "glua doc comment",
+        "glua documented function"
+      ]
+    },
+    {
+      "name": "required module dot member completion",
+      "kind": "module-member",
+      "document": "app/main.lua",
+      "source": "local tools = require('completion_module')\ntools.",
+      "marker": "tools.",
+      "cursor": "after-marker",
+      "expected": [
+        "timesPrint",
+        "dotCall",
+        "colonCall",
+        "bracketCall"
+      ],
+      "detailContains": {
+        "timesPrint": "timesPrint(name, times)",
+        "colonCall": "method"
+      },
+      "insertTextContains": {
+        "timesPrint": "timesPrint(${1:name}, ${2:times})"
+      },
+      "documentationContains": {
+        "timesPrint": "print many times",
+        "colonCall": "call with self"
+      }
+    },
+    {
+      "name": "required module colon member completion",
+      "kind": "module-member",
+      "document": "app/main.lua",
+      "source": "local tools = require('completion_module')\ntools:",
+      "marker": "tools:",
+      "cursor": "after-marker",
+      "expected": [
+        "colonCall"
+      ],
+      "detailContains": {
+        "colonCall": "colonCall(value) method"
+      },
+      "insertTextContains": {
+        "colonCall": "colonCall(${1:value})"
+      },
+      "documentationContains": {
+        "colonCall": "payload"
+      }
+    },
+    {
+      "name": "required table literal member completion",
+      "kind": "module-member",
+      "document": "app/main.lua",
+      "source": "local tools = require('literal_completion')\ntools.",
+      "marker": "tools.",
+      "cursor": "after-marker",
+      "expected": [
+        "literalCall",
+        "indexedLiteral",
+        "plainValue"
+      ]
+    },
+    {
+      "name": "required table literal non function guard",
+      "kind": "module-member",
+      "document": "app/main.lua",
+      "source": "local tools = require('non_function_completion')\ntools.",
+      "marker": "tools.",
+      "cursor": "after-marker",
+      "expected": [
+        "ccc",
+        "value"
+      ]
+    },
+    {
+      "name": "required glua const and variable member completion",
+      "kind": "module-member",
+      "document": "app/main.lua",
+      "source": "local tools = require('const_completion')\ntools.",
+      "marker": "tools.",
+      "cursor": "after-marker",
+      "expected": [
+        "a",
+        "b",
+        "mutable"
+      ],
+      "detailContains": {
+        "a": "const",
+        "mutable": "table field"
+      }
+    },
+    {
+      "name": "required non returned table guard",
+      "kind": "module-member",
+      "document": "app/main.lua",
+      "source": "local tools = require('private_completion')\ntools.",
+      "marker": "tools.",
+      "cursor": "after-marker",
+      "expected": [
+        "visible"
+      ],
+      "notExpected": [
+        "hidden"
+      ]
+    },
+    {
+      "name": "builtin optional signature snippet",
+      "kind": "builtin-member",
+      "source": "string.ma",
+      "marker": "string.ma",
+      "cursor": "after-marker",
+      "expected": [
+        "match"
+      ],
+      "detailContains": {
+        "match": "string.match(s, pattern [, init])"
+      },
+      "insertTextContains": {
+        "match": "match(${1:s}, ${2:pattern}, ${3:init})"
+      }
+    },
+    {
+      "name": "glua serialization namespace completion",
+      "kind": "builtin-member",
+      "source": "glua.",
+      "marker": "glua.",
+      "cursor": "after-marker",
+      "expected": [
+        "null",
+        "array",
+        "object",
+        "json",
+        "yaml",
+        "xml",
+        "toml",
+        "codec",
+        "hash",
+        "regex",
+        "uuid",
+        "zip",
+        "path",
+        "schema",
+        "event"
+      ],
+      "detailContains": {
+        "json": "glua.json",
+        "yaml": "glua.yaml",
+        "xml": "glua.xml",
+        "toml": "glua.toml",
+        "hash": "glua.hash",
+        "path": "glua.path",
+        "schema": "glua.schema"
+      }
+    },
+    {
+      "name": "glua json codec completion",
+      "kind": "builtin-member",
+      "source": "glua.json.",
+      "marker": "glua.json.",
+      "cursor": "after-marker",
+      "expected": [
+        "null",
+        "encode",
+        "decode"
+      ],
+      "detailContains": {
+        "encode": "glua.json.encode(value [, prettyOrOptions])",
+        "decode": "glua.json.decode(text [, options])"
+      },
+      "insertTextContains": {
+        "encode": "encode(${1:value}, ${2:prettyOrOptions})",
+        "decode": "decode(${1:text}, ${2:options})"
+      }
+    },
+    {
+      "name": "glua hash completion",
+      "kind": "builtin-member",
+      "source": "glua.hash.",
+      "marker": "glua.hash.",
+      "cursor": "after-marker",
+      "expected": [
+        "md5",
+        "sha1",
+        "sha256",
+        "sha512",
+        "hmac"
+      ],
+      "detailContains": {
+        "md5": "glua.hash.md5(data)",
+        "sha256": "glua.hash.sha256(data)",
+        "hmac": "glua.hash.hmac(algorithm, key, data)"
+      }
+    },
+    {
+      "name": "glua zip completion",
+      "kind": "builtin-member",
+      "source": "glua.zip.",
+      "marker": "glua.zip.",
+      "cursor": "after-marker",
+      "expected": [
+        "compress",
+        "decompress"
+      ],
+      "detailContains": {
+        "compress": "glua.zip.compress(entries [, options])",
+        "decompress": "glua.zip.decompress(archive [, options])"
+      }
+    },
+    {
+      "name": "glua path completion",
+      "kind": "builtin-member",
+      "source": "glua.path.",
+      "marker": "glua.path.",
+      "cursor": "after-marker",
+      "expected": [
+        "join",
+        "clean",
+        "base",
+        "dir",
+        "ext",
+        "isAbs",
+        "rel",
+        "split",
+        "volume",
+        "toSlash",
+        "fromSlash",
+        "match",
+        "separator",
+        "listSeparator"
+      ],
+      "detailContains": {
+        "join": "glua.path.join(...)",
+        "rel": "glua.path.rel(base, target)",
+        "match": "glua.path.match(pattern, name)"
+      }
+    },
+    {
+      "name": "glua event namespace completion",
+      "kind": "builtin-member",
+      "source": "glua.event.",
+      "marker": "glua.event.",
+      "cursor": "after-marker",
+      "expected": [
+        "setProgress",
+        "setProgressAsync",
+        "setCallback",
+        "eventList",
+        "get",
+        "clear",
+        "setGroupMuted",
+        "removeGroup",
+        "flush",
+        "stats"
+      ],
+      "detailContains": {
+        "setProgress": "glua.event.setProgress(event, callback [, config])",
+        "eventList": "glua.event.eventList()",
+        "setCallback": "glua.event.setCallback(id, callback)",
+        "stats": "glua.event.stats()"
+      },
+      "insertTextContains": {
+        "setProgress": "setProgress(${1:event}, ${2:callback}, ${3:config})"
+      }
+    },
+    {
+      "name": "glua event constants completion",
+      "kind": "builtin-member",
+      "source": "glua.event.events.progress_function_",
+      "marker": "glua.event.events.progress_function_",
+      "cursor": "after-marker",
+      "expected": [
+        "progress_function_call",
+        "progress_function_return",
+        "progress_function_error",
+        "progress_function_exit"
+      ],
+      "detailContains": {
+        "progress_function_call": "glua.event.events.progress_function_call"
+      }
+    },
+    {
+      "name": "glua file progress constant completion",
+      "kind": "builtin-member",
+      "source": "glua.event.events.progress_",
+      "marker": "glua.event.events.progress_",
+      "cursor": "after-marker",
+      "expected": [
+        "progress_line",
+        "progress_start",
+        "progress_end",
+        "progress_error",
+        "progress_exit"
+      ],
+      "detailContains": {
+        "progress_start": "glua.event.events.progress_start"
+      }
+    },
+    {
+      "name": "glua event alias constant completion",
+      "kind": "builtin-member",
+      "source": "local event = glua.event\nlocal events = event.events\nevents.progress_",
+      "marker": "events.progress_",
+      "cursor": "after-marker",
+      "expected": [
+        "progress_line",
+        "progress_end",
+        "progress_function_call"
+      ],
+      "detailContains": {
+        "progress_end": "glua.event.events.progress_end"
+      }
+    }
+  ]
+}
+

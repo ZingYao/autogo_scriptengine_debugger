@@ -1,0 +1,11 @@
+node_modules/**
+test/**
+extension.js
+autogo-core.js
+dap-path-proxy.js
+glua-extension.js
+gluals-resolver.js
+server/*.js
+*.vsix
+package-lock.json
+.DS_Store

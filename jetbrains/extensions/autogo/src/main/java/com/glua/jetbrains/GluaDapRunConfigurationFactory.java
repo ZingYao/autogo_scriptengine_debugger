@@ -1,0 +1,31 @@
+package com.glua.jetbrains;
+
+import com.intellij.execution.configurations.ConfigurationFactory;
+import com.intellij.execution.configurations.ConfigurationType;
+import com.intellij.execution.configurations.RunConfiguration;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.project.Project;
+import org.jetbrains.annotations.NotNull;
+
+public final class GluaDapRunConfigurationFactory extends ConfigurationFactory {
+    public GluaDapRunConfigurationFactory(@NotNull ConfigurationType type) {
+        super(type);
+    }
+
+    @Override
+    public @NotNull String getId() {
+        return "GLuaFileFactory";
+    }
+
+    @Override
+    public @NotNull RunConfiguration createTemplateConfiguration(@NotNull Project project) {
+        GluaSettings settings = ApplicationManager.getApplication().getService(GluaSettings.class);
+        GluaDapRunConfiguration configuration = new GluaDapRunConfiguration(project, this, "GLua");
+        configuration.setGluaExecutable(settings.gluaExecutable());
+        configuration.setUseRemoteDap(true);
+        configuration.setDapHost("127.0.0.1");
+        configuration.setDapPort(38697);
+        configuration.setAllowRunningInParallel(true);
+        return configuration;
+    }
+}

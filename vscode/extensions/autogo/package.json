@@ -1,0 +1,1034 @@
+{
+  "name": "autogo",
+  "displayName": "AutoGo Script Engine Console",
+  "description": "AutoGo AG、ADB、远程 GLua 引擎、DAP 调试与完整 GLua 语言支持。",
+  "version": "1.0.0",
+  "publisher": "Zing",
+  "author": "zing",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZingYao/autogo_scriptengine_debugger.git",
+    "directory": "vscode/extensions/autogo"
+  },
+  "bugs": {
+    "url": "https://github.com/ZingYao/autogo_scriptengine_debugger/issues"
+  },
+  "homepage": "https://zingyao.github.io/autogo_scriptengine/",
+  "license": "MIT",
+  "keywords": [
+    "lua",
+    "glua",
+    "language-server",
+    "debug-adapter"
+  ],
+  "scripts": {
+    "sync:icons": "../../../scripts/sync-editor-icons.sh",
+    "build": "npm run sync:icons && npm run build:tools && esbuild extension.js --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "build:tools": "../../../scripts/build-glua-tools-platforms.sh",
+    "build:gluals": "npm run build:tools",
+    "build:extension": "esbuild extension.js --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js && esbuild server/index.js --bundle --platform=node --format=cjs --outfile=dist/server.js",
+    "vscode:prepublish": "npm run build",
+    "test": "node test/extension.test.js && node test/request-json.test.js && node test/dap-path-proxy.test.js && node test/gluals-resolver.test.js && node test/syntax-highlighting.test.js && node test/builtin-stub.test.js && node test/golden-diagnostics.test.js && node test/golden-require-definition.test.js && node test/golden-completion.test.js && node test/formatting.test.js && node test/debug-attach.test.js"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:glua",
+    "onLanguage:lua",
+    "workspaceContains:**/*.glua",
+    "workspaceContains:**/*.lua",
+    "onCommand:glua.openBuiltinSignatureJson",
+    "onCommand:glua.showBuiltinDocStatus",
+    "onCommand:glua.startAttachDebug",
+    "onCommand:glua.runCurrentFile",
+    "onCommand:glua.debugCurrentFile",
+    "onCommand:glua.selectGluaExecutable",
+    "onCommand:glua.selectGluacExecutable",
+    "onCommand:glua.selectBuiltinDocs",
+    "onDebugResolve:glua",
+    "onCommand:autogo.quickDebug",
+    "onCommand:autogo.run",
+    "onCommand:autogo.stop",
+    "onCommand:autogo.remoteEngine",
+    "onCommand:autogo.startEngine",
+    "onCommand:autogo.restartEngine",
+    "onCommand:autogo.syncResources",
+    "onCommand:autogo.nodeAssistant",
+    "onCommand:autogo.buildArm64",
+    "onCommand:autogo.buildX8664",
+    "onCommand:autogo.buildX86",
+    "onCommand:autogo.buildApk",
+    "onCommand:autogo.remoteRunCurrent",
+    "onCommand:autogo.compileGluac",
+    "onCommand:autogo.compileRunGluac",
+    "onCommand:autogo.compileDebugGluac",
+    "onCommand:autogo.initAndroid",
+    "onCommand:autogo.initIos",
+    "onCommand:autogo.refreshDevices",
+    "onCommand:autogo.pushFile",
+    "onCommand:autogo.officialDocs",
+    "onCommand:autogo.openSettings",
+    "onCommand:autogo.applyEngineConfig",
+    "onCommand:autogo.checkUpdate",
+    "onCommand:autogo.discoverTools",
+    "onCommand:autogo.testProxy",
+    "onCommand:autogo.setRemoteToken",
+    "onCommand:autogo.showConsole",
+    "onView:autogo.console",
+    "onCommand:autogo.selectModules",
+    "onCommand:autogo.switchToWireless",
+    "onCommand:autogo.pairWireless",
+    "onCommand:autogo.setProxyPassword",
+    "onCommand:autogo.selectAgPath",
+    "onCommand:autogo.selectAdbPath",
+    "onCommand:autogo.selectGoPath",
+    "onCommand:autogo.selectGluacPath",
+    "onCommand:autogo.selectCustomInitializer"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "glua.openBuiltinSignatureJson",
+        "title": "%glua.openBuiltinSignatureJson.title%"
+      },
+      {
+        "command": "glua.showBuiltinDocStatus",
+        "title": "%glua.showBuiltinDocStatus.title%"
+      },
+      {
+        "command": "glua.showOutput",
+        "title": "%glua.showOutput.title%"
+      },
+      {
+        "command": "glua.createAttachConfig",
+        "title": "%glua.createAttachConfig.title%"
+      },
+      {
+        "command": "glua.startAttachDebug",
+        "title": "%glua.startAttachDebug.title%"
+      },
+      {
+        "command": "glua.runCurrentFile",
+        "title": "%glua.runCurrentFile.title%"
+      },
+      {
+        "command": "glua.debugCurrentFile",
+        "title": "%glua.debugCurrentFile.title%"
+      },
+      {
+        "command": "glua.selectGluaExecutable",
+        "title": "%glua.selectGluaExecutable.title%"
+      },
+      {
+        "command": "glua.selectGluacExecutable",
+        "title": "%glua.selectGluacExecutable.title%"
+      },
+      {
+        "command": "glua.selectBuiltinDocs",
+        "title": "%glua.selectBuiltinDocs.title%"
+      },
+      {
+        "command": "autogo.quickDebug",
+        "title": "AutoGo: 快速调试",
+        "icon": {
+          "light": "resources/icons/debug.svg",
+          "dark": "resources/icons/debug.svg"
+        }
+      },
+      {
+        "command": "autogo.run",
+        "title": "AutoGo: 运行当前 Lua/GLua 文件",
+        "icon": {
+          "light": "resources/icons/run.svg",
+          "dark": "resources/icons/run.svg"
+        }
+      },
+      {
+        "command": "autogo.stop",
+        "title": "AutoGo: 停止运行",
+        "icon": {
+          "light": "resources/icons/stop.svg",
+          "dark": "resources/icons/stop.svg"
+        }
+      },
+      {
+        "command": "autogo.remoteEngine",
+        "title": "AutoGo: 启动/重启移动端引擎",
+        "icon": {
+          "light": "resources/icons/engine.svg",
+          "dark": "resources/icons/engine.svg"
+        }
+      },
+      {
+        "command": "autogo.startEngine",
+        "title": "AutoGo: 启动移动端引擎",
+        "icon": {
+          "light": "resources/icons/run.svg",
+          "dark": "resources/icons/run.svg"
+        }
+      },
+      {
+        "command": "autogo.restartEngine",
+        "title": "AutoGo: 重启移动端引擎",
+        "icon": {
+          "light": "resources/icons/sync.svg",
+          "dark": "resources/icons/sync.svg"
+        }
+      },
+      {
+        "command": "autogo.syncResources",
+        "title": "AutoGo: 同步资源",
+        "icon": {
+          "light": "resources/icons/sync.svg",
+          "dark": "resources/icons/sync.svg"
+        }
+      },
+      {
+        "command": "autogo.nodeAssistant",
+        "title": "AutoGo: 节点助手",
+        "icon": {
+          "light": "resources/icons/node.svg",
+          "dark": "resources/icons/node.svg"
+        }
+      },
+      {
+        "command": "autogo.buildArm64",
+        "title": "AutoGo: 编译 arm64-v8a",
+        "icon": {
+          "light": "resources/icons/build.svg",
+          "dark": "resources/icons/build.svg"
+        }
+      },
+      {
+        "command": "autogo.buildX8664",
+        "title": "AutoGo: 编译 x86_64",
+        "icon": {
+          "light": "resources/icons/build.svg",
+          "dark": "resources/icons/build.svg"
+        }
+      },
+      {
+        "command": "autogo.buildX86",
+        "title": "AutoGo: 编译 x86",
+        "icon": {
+          "light": "resources/icons/build.svg",
+          "dark": "resources/icons/build.svg"
+        }
+      },
+      {
+        "command": "autogo.buildApk",
+        "title": "AutoGo: 编译 APK",
+        "icon": {
+          "light": "resources/icons/build.svg",
+          "dark": "resources/icons/build.svg"
+        }
+      },
+      {
+        "command": "autogo.remoteRunCurrent",
+        "title": "AutoGo: 远程运行当前脚本",
+        "icon": {
+          "light": "resources/icons/run.svg",
+          "dark": "resources/icons/run.svg"
+        }
+      },
+      {
+        "command": "autogo.compileGluac",
+        "title": "AutoGo: 编译当前文件为 GLuac",
+        "icon": {
+          "light": "resources/icons/glua.svg",
+          "dark": "resources/icons/glua.svg"
+        }
+      },
+      {
+        "command": "autogo.compileRunGluac",
+        "title": "AutoGo: 编译并远程运行 GLuac",
+        "icon": {
+          "light": "resources/icons/run.svg",
+          "dark": "resources/icons/run.svg"
+        }
+      },
+      {
+        "command": "autogo.compileDebugGluac",
+        "title": "AutoGo: 编译并远程调试 GLuac",
+        "icon": {
+          "light": "resources/icons/debug.svg",
+          "dark": "resources/icons/debug.svg"
+        }
+      },
+      {
+        "command": "autogo.initAndroid",
+        "title": "AutoGo: 初始化 Android 项目",
+        "icon": {
+          "light": "resources/icons/init.svg",
+          "dark": "resources/icons/init.svg"
+        }
+      },
+      {
+        "command": "autogo.initIos",
+        "title": "AutoGo: 初始化 iOS 项目",
+        "icon": {
+          "light": "resources/icons/init.svg",
+          "dark": "resources/icons/init.svg"
+        }
+      },
+      {
+        "command": "autogo.refreshDevices",
+        "title": "AutoGo: 刷新并选择设备",
+        "icon": {
+          "light": "resources/icons/device.svg",
+          "dark": "resources/icons/device.svg"
+        }
+      },
+      {
+        "command": "autogo.pushFile",
+        "title": "AutoGo: 推送文件",
+        "icon": {
+          "light": "resources/icons/push.svg",
+          "dark": "resources/icons/push.svg"
+        }
+      },
+      {
+        "command": "autogo.officialDocs",
+        "title": "AutoGo: 官方文档",
+        "icon": {
+          "light": "resources/icons/docs.svg",
+          "dark": "resources/icons/docs.svg"
+        }
+      },
+      {
+        "command": "autogo.openSettings",
+        "title": "AutoGo: 其他设置",
+        "icon": {
+          "light": "resources/icons/settings.svg",
+          "dark": "resources/icons/settings.svg"
+        }
+      },
+      {
+        "command": "autogo.applyEngineConfig",
+        "title": "AutoGo: 应用引擎配置",
+        "icon": {
+          "light": "resources/icons/apply.svg",
+          "dark": "resources/icons/apply.svg"
+        }
+      },
+      {
+        "command": "autogo.checkUpdate",
+        "title": "AutoGo: 检查 AG 更新",
+        "icon": {
+          "light": "resources/icons/update.svg",
+          "dark": "resources/icons/update.svg"
+        }
+      },
+      {
+        "command": "autogo.discoverTools",
+        "title": "AutoGo: 重新自动发现工具",
+        "icon": {
+          "light": "resources/icons/settings.svg",
+          "dark": "resources/icons/settings.svg"
+        }
+      },
+      {
+        "command": "autogo.testProxy",
+        "title": "AutoGo: 测试网络代理",
+        "icon": {
+          "light": "resources/icons/device.svg",
+          "dark": "resources/icons/device.svg"
+        }
+      },
+      {
+        "command": "autogo.setRemoteToken",
+        "title": "AutoGo: 设置远程引擎令牌",
+        "icon": {
+          "light": "resources/icons/settings.svg",
+          "dark": "resources/icons/settings.svg"
+        }
+      },
+      {
+        "command": "autogo.showConsole",
+        "title": "AutoGo: 显示控制台",
+        "icon": {
+          "light": "resources/icons/activity.svg",
+          "dark": "resources/icons/activity.svg"
+        }
+      },
+      {
+        "command": "autogo.selectModules",
+        "title": "AutoGo: 选择模块黑白名单",
+        "icon": {
+          "light": "resources/icons/settings.svg",
+          "dark": "resources/icons/settings.svg"
+        }
+      },
+      {
+        "command": "autogo.switchToWireless",
+        "title": "AutoGo: 将当前设备切换为无线连接",
+        "icon": {
+          "light": "resources/icons/device.svg",
+          "dark": "resources/icons/device.svg"
+        }
+      },
+      {
+        "command": "autogo.pairWireless",
+        "title": "AutoGo: 无线调试配对",
+        "icon": {
+          "light": "resources/icons/device.svg",
+          "dark": "resources/icons/device.svg"
+        }
+      },
+      {
+        "command": "autogo.setProxyPassword",
+        "title": "AutoGo: 设置网络代理密码",
+        "icon": {
+          "light": "resources/icons/settings.svg",
+          "dark": "resources/icons/settings.svg"
+        }
+      },
+      {
+        "command": "autogo.selectAgPath",
+        "title": "AutoGo: 选择 AG 可执行文件"
+      },
+      {
+        "command": "autogo.selectAdbPath",
+        "title": "AutoGo: 选择 ADB 可执行文件"
+      },
+      {
+        "command": "autogo.selectGoPath",
+        "title": "AutoGo: 选择 Go 可执行文件"
+      },
+      {
+        "command": "autogo.selectGluacPath",
+        "title": "AutoGo: 选择 GLuac 可执行文件"
+      },
+      {
+        "command": "autogo.selectCustomInitializer",
+        "title": "AutoGo: 选择自定义初始化文件"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "glua.openBuiltinSignatureJson",
+          "when": "true"
+        },
+        {
+          "command": "glua.showBuiltinDocStatus",
+          "when": "true"
+        },
+        {
+          "command": "glua.showOutput",
+          "when": "true"
+        },
+        {
+          "command": "glua.createAttachConfig",
+          "when": "true"
+        },
+        {
+          "command": "glua.startAttachDebug",
+          "when": "true"
+        },
+        {
+          "command": "glua.runCurrentFile",
+          "when": "true"
+        },
+        {
+          "command": "glua.debugCurrentFile",
+          "when": "true"
+        },
+        {
+          "command": "glua.selectGluaExecutable",
+          "when": "true"
+        },
+        {
+          "command": "glua.selectGluacExecutable",
+          "when": "true"
+        },
+        {
+          "command": "glua.selectBuiltinDocs",
+          "when": "true"
+        },
+        {
+          "command": "autogo.quickDebug",
+          "when": "true"
+        },
+        {
+          "command": "autogo.run",
+          "when": "true"
+        },
+        {
+          "command": "autogo.stop",
+          "when": "true"
+        },
+        {
+          "command": "autogo.remoteEngine",
+          "when": "true"
+        },
+        {
+          "command": "autogo.syncResources",
+          "when": "true"
+        },
+        {
+          "command": "autogo.nodeAssistant",
+          "when": "true"
+        },
+        {
+          "command": "autogo.buildArm64",
+          "when": "true"
+        },
+        {
+          "command": "autogo.buildX8664",
+          "when": "true"
+        },
+        {
+          "command": "autogo.buildX86",
+          "when": "true"
+        },
+        {
+          "command": "autogo.buildApk",
+          "when": "true"
+        },
+        {
+          "command": "autogo.remoteRunCurrent",
+          "when": "true"
+        },
+        {
+          "command": "autogo.compileGluac",
+          "when": "true"
+        },
+        {
+          "command": "autogo.compileRunGluac",
+          "when": "true"
+        },
+        {
+          "command": "autogo.compileDebugGluac",
+          "when": "true"
+        },
+        {
+          "command": "autogo.initAndroid",
+          "when": "true"
+        },
+        {
+          "command": "autogo.initIos",
+          "when": "true"
+        },
+        {
+          "command": "autogo.refreshDevices",
+          "when": "true"
+        },
+        {
+          "command": "autogo.pushFile",
+          "when": "true"
+        },
+        {
+          "command": "autogo.officialDocs",
+          "when": "true"
+        },
+        {
+          "command": "autogo.openSettings",
+          "when": "true"
+        },
+        {
+          "command": "autogo.applyEngineConfig",
+          "when": "true"
+        },
+        {
+          "command": "autogo.checkUpdate",
+          "when": "true"
+        },
+        {
+          "command": "autogo.discoverTools",
+          "when": "true"
+        },
+        {
+          "command": "autogo.testProxy",
+          "when": "true"
+        },
+        {
+          "command": "autogo.setRemoteToken",
+          "when": "true"
+        },
+        {
+          "command": "autogo.showConsole",
+          "when": "true"
+        },
+        {
+          "command": "autogo.selectModules",
+          "when": "true"
+        },
+        {
+          "command": "autogo.switchToWireless",
+          "when": "true"
+        },
+        {
+          "command": "autogo.pairWireless",
+          "when": "true"
+        },
+        {
+          "command": "autogo.setProxyPassword",
+          "when": "true"
+        }
+      ]
+    },
+    "debuggers": [
+      {
+        "type": "glua",
+        "label": "GLua",
+        "languages": [
+          "glua",
+          "lua"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "required": [
+              "request",
+              "type",
+              "name"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "glua"
+                ],
+                "description": "%glua.debug.type.description%"
+              },
+              "request": {
+                "type": "string",
+                "enum": [
+                  "attach"
+                ],
+                "description": "%glua.debug.request.attach.description%"
+              },
+              "name": {
+                "type": "string",
+                "description": "%glua.debug.name.description%"
+              },
+              "host": {
+                "type": "string",
+                "default": "${config:glua.dapHost}",
+                "description": "%glua.debug.host.description%"
+              },
+              "port": {
+                "type": "number",
+                "default": "${config:glua.dapPort}",
+                "description": "%glua.debug.port.description%"
+              }
+            }
+          },
+          "launch": {
+            "required": [
+              "request",
+              "type",
+              "name",
+              "program"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "glua"
+                ],
+                "description": "%glua.debug.type.description%"
+              },
+              "request": {
+                "type": "string",
+                "enum": [
+                  "launch"
+                ],
+                "description": "%glua.debug.request.launch.description%"
+              },
+              "name": {
+                "type": "string",
+                "description": "%glua.debug.name.description%"
+              },
+              "program": {
+                "type": "string",
+                "description": "%glua.debug.program.description%"
+              },
+              "gluaExecutable": {
+                "type": "string",
+                "description": "%glua.debug.gluaExecutable.description%"
+              },
+              "useRemoteDap": {
+                "type": "boolean",
+                "default": false,
+                "description": "%glua.debug.useRemoteDap.description%"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "%glua.debug.args.description%"
+              },
+              "cwd": {
+                "type": "string",
+                "description": "%glua.debug.cwd.description%"
+              },
+              "host": {
+                "type": "string",
+                "description": "%glua.debug.host.fallback.description%"
+              },
+              "port": {
+                "type": "number",
+                "description": "%glua.debug.port.fallback.description%"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "glua",
+            "request": "launch",
+            "name": "Debug current GLua file",
+            "program": "${file}",
+            "gluaExecutable": "${config:glua.executable}",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+          },
+          {
+            "type": "glua",
+            "request": "attach",
+            "name": "Attach to GLua DAP",
+            "host": "${config:glua.dapHost}",
+            "port": "${config:glua.dapPort}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "GLua: Debug current file",
+            "description": "Debug the current Lua/glua file using the configured glua executable.",
+            "body": {
+              "type": "glua",
+              "request": "launch",
+              "name": "Debug current GLua file",
+              "program": "${file}",
+              "gluaExecutable": "${config:glua.executable}",
+              "args": [],
+              "cwd": "${workspaceFolder}"
+            }
+          },
+          {
+            "label": "GLua: Attach to DAP server",
+            "description": "Attach VS Code to a running GLua Debug Adapter Protocol server over TCP.",
+            "body": {
+              "type": "glua",
+              "request": "attach",
+              "name": "Attach to GLua DAP",
+              "host": "${config:glua.dapHost}",
+              "port": "${config:glua.dapPort}"
+            }
+          }
+        ]
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "glua"
+      },
+      {
+        "language": "lua"
+      }
+    ],
+    "languages": [
+      {
+        "id": "glua",
+        "aliases": [
+          "glua",
+          "GLua"
+        ],
+        "extensions": [
+          ".glua",
+          ".lua"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "glua",
+        "scopeName": "source.glua",
+        "path": "./syntaxes/glua.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[glua]": {
+        "editor.defaultFormatter": "Zing.autogo",
+        "editor.semanticHighlighting.enabled": true,
+        "editor.semanticTokenColorCustomizations": {
+          "enabled": true,
+          "rules": {
+            "keyword": "#CC7832",
+            "function": "#56A8F5",
+            "method": "#56A8F5",
+            "namespace": "#4EC9B0"
+          }
+        },
+        "editor.tokenColorCustomizations": {
+          "textMateRules": [
+            {
+              "scope": "keyword.control.glua",
+              "settings": {
+                "foreground": "#CC7832"
+              }
+            },
+            {
+              "scope": [
+                "entity.name.function.glua",
+                "entity.name.function.call.glua",
+                "entity.name.function.member.glua"
+              ],
+              "settings": {
+                "foreground": "#56A8F5"
+              }
+            },
+            {
+              "scope": "entity.name.type.library.glua",
+              "settings": {
+                "foreground": "#4EC9B0"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "configuration": [
+      {
+        "title": "glua",
+        "properties": {
+          "glua.syntax": {
+            "type": "string",
+            "default": "extended",
+            "order": 10,
+            "description": "%glua.configuration.syntax.description%"
+          },
+          "glua.events": {
+            "type": "boolean",
+            "default": true,
+            "order": 20,
+            "description": "%glua.configuration.events.description%"
+          },
+          "glua.docLanguage": {
+            "type": "string",
+            "default": "auto",
+            "order": 30,
+            "enum": [
+              "auto",
+              "en",
+              "zh-CN"
+            ],
+            "description": "%glua.configuration.docLanguage.description%"
+          },
+          "glua.executable": {
+            "type": "string",
+            "default": "",
+            "order": 40,
+            "description": "%glua.configuration.executable.description%"
+          },
+          "glua.languageServerExecutable": {
+            "type": "string",
+            "default": "",
+            "order": 45,
+            "description": "%glua.configuration.languageServerExecutable.description%"
+          },
+          "glua.gluacExecutable": {
+            "type": "string",
+            "default": "",
+            "order": 50,
+            "description": "%glua.configuration.gluacExecutable.description%"
+          },
+          "glua.useRemoteDap": {
+            "type": "boolean",
+            "default": false,
+            "order": 60,
+            "description": "%glua.configuration.useRemoteDap.description%"
+          },
+          "glua.dapHost": {
+            "type": "string",
+            "default": "127.0.0.1",
+            "order": 61,
+            "description": "%glua.configuration.dapHost.description%"
+          },
+          "glua.dapPort": {
+            "type": "number",
+            "default": 5678,
+            "minimum": 1,
+            "maximum": 65535,
+            "order": 62,
+            "description": "%glua.configuration.dapPort.description%"
+          },
+          "glua.builtinDocs": {
+            "type": "array",
+            "default": [],
+            "order": 70,
+            "items": {
+              "type": "string"
+            },
+            "description": "%glua.configuration.builtinDocs.description%"
+          }
+        }
+      },
+      {
+        "title": "AutoGo Script Engine Console",
+        "properties": {
+          "autogo.agPath": {
+            "type": "string",
+            "default": "",
+            "description": "AG 可执行文件；留空时自动发现并写回。"
+          },
+          "autogo.adbPath": {
+            "type": "string",
+            "default": "",
+            "description": "ADB 可执行文件；留空时自动发现并写回。"
+          },
+          "autogo.goPath": {
+            "type": "string",
+            "default": "",
+            "description": "Go 可执行文件；留空时自动发现并写回。"
+          },
+          "autogo.gluacPath": {
+            "type": "string",
+            "default": "",
+            "description": "GLuac 可执行文件；留空时自动发现并写回。"
+          },
+          "autogo.defaultDevice": {
+            "type": "string",
+            "default": "",
+            "scope": "resource",
+            "description": "当前项目默认 adb 设备序列号；使用刷新设备命令选择。"
+          },
+          "autogo.remoteTempDir": {
+            "type": "string",
+            "default": "/data/local/tmp",
+            "description": "设备临时目录。"
+          },
+          "autogo.modulePolicy": {
+            "type": "string",
+            "enum": [
+              "ALL",
+              "ALLOWLIST",
+              "DENYLIST"
+            ],
+            "default": "ALL",
+            "description": "AutoGo 模块策略。"
+          },
+          "autogo.moduleRegenerationPreference": {
+            "type": "string",
+            "enum": [
+              "ASK",
+              "ALWAYS",
+              "NEVER"
+            ],
+            "default": "ASK",
+            "description": "AutoGo 模块变化后的代码生成偏好。"
+          },
+          "autogo.modules": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "通过设置多选编辑器维护的模块列表。"
+          },
+          "autogo.customInitializer": {
+            "type": "string",
+            "default": "",
+            "description": "自定义 Go 初始化文件路径。"
+          },
+          "autogo.proxy.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "启用通用下载、Clone 与子进程代理。"
+          },
+          "autogo.proxy.type": {
+            "type": "string",
+            "enum": [
+              "http",
+              "https",
+              "socks5"
+            ],
+            "default": "http",
+            "description": "代理类型。"
+          },
+          "autogo.proxy.host": {
+            "type": "string",
+            "default": "",
+            "description": "代理 IP/主机。"
+          },
+          "autogo.proxy.port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "default": 7890,
+            "description": "代理端口。"
+          },
+          "autogo.proxy.auth": {
+            "type": "boolean",
+            "default": false,
+            "description": "代理是否需要认证。"
+          },
+          "autogo.proxy.username": {
+            "type": "string",
+            "default": "",
+            "description": "代理用户名。"
+          },
+          "autogo.proxy.testUrl": {
+            "type": "string",
+            "default": "https://www.google.com/generate_204",
+            "description": "代理测试地址。"
+          }
+        }
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "autogo",
+          "title": "AutoGo Script Engine Console",
+          "icon": "resources/icons/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "autogo": [
+        {
+          "id": "autogo.console",
+          "name": "AutoGo Script Engine Console",
+          "type": "webview"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "autogo.quickDebug",
+        "key": "f6"
+      },
+      {
+        "command": "autogo.run",
+        "key": "f7"
+      },
+      {
+        "command": "autogo.stop",
+        "key": "f8"
+      },
+      {
+        "command": "autogo.syncResources",
+        "key": "f10"
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
