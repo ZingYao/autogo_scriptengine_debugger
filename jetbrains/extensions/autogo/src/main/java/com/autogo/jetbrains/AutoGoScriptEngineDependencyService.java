@@ -19,6 +19,8 @@ public final class AutoGoScriptEngineDependencyService {
     static final String REPOSITORY_URL = "https://github.com/ZingYao/autogo_scriptengine.git";
     static final String RELATIVE_DIRECTORY = ".autogo/deps/autogo_scriptengine";
     static final String LOCAL_REQUIRE_VERSION = "v0.0.0";
+    static final String GOJA_MODULE = "github.com/dop251/goja";
+    static final String GOJA_DEBUG_REPLACEMENT = "github.com/ZingYao/goja@v0.0.1-autogo.1";
     private static final Pattern MODULE_LINE = Pattern.compile("(?m)^\\s*module\\s+([^\\s]+)\\s*$");
 
     private AutoGoScriptEngineDependencyService() {
@@ -106,13 +108,22 @@ public final class AutoGoScriptEngineDependencyService {
                     return;
                 }
                 console.info("已写入 Go replace：" + replace);
-                process.run(goExecutable, List.of("mod", "tidy"), true, tidyExit -> {
-                    if (tidyExit != 0) {
-                        // require 与 replace 已成功但 tidy 失败时明确区分状态。
-                        console.error("require/replace 已写入，但 go mod tidy 失败；请检查 Go 版本和依赖日志。");
+                String gojaReplace = GOJA_MODULE + "=" + GOJA_DEBUG_REPLACEMENT;
+                process.run(goExecutable, List.of("mod", "edit", "-replace=" + gojaReplace), true, gojaExit -> {
+                    if (gojaExit != 0) {
+                        // JS DAP 依赖 fork 后的 goja debugger 包，写入失败会导致宿主入口不可编译。
+                        console.error("写入 goja debugger replace 失败。");
                         return;
                     }
-                    ensureDependencyGraph(project, dependency, modulePath, goExecutable, require, replace);
+                    console.info("已写入 Go replace：" + gojaReplace);
+                    process.run(goExecutable, List.of("mod", "tidy"), true, tidyExit -> {
+                        if (tidyExit != 0) {
+                            // require 与 replace 已成功但 tidy 失败时明确区分状态。
+                            console.error("require/replace 已写入，但 go mod tidy 失败；请检查 Go 版本和依赖日志。");
+                            return;
+                        }
+                        ensureDependencyGraph(project, dependency, modulePath, goExecutable, require, replace);
+                    });
                 });
             });
         });
@@ -148,18 +159,26 @@ public final class AutoGoScriptEngineDependencyService {
                     console.error("补写 autogo_scriptengine replace 失败，初始化未完成。");
                     return;
                 }
-                try {
-                    if (!hasRequireAndReplace(goMod, modulePath, RELATIVE_DIRECTORY)) {
-                        // Go 命令成功但文件内容不满足约束时给出确定性失败，而不是假成功。
-                        console.error("autogo_scriptengine 依赖图仍不完整：必须同时包含 require 与 replace。");
+                process.run(goExecutable, List.of("mod", "edit",
+                        "-replace=" + GOJA_MODULE + "=" + GOJA_DEBUG_REPLACEMENT), true, gojaExit -> {
+                    if (gojaExit != 0) {
+                        // 缺少 goja fork 会使 JavaScript DAP 入口无法编译。
+                        console.error("补写 goja debugger replace 失败，初始化未完成。");
                         return;
                     }
-                } catch (IOException error) {
-                    // 最终文件读取失败同样不进入成功路径。
-                    console.error("无法复核 Go 依赖图：" + error.getMessage());
-                    return;
-                }
-                finishInitialization(project, dependency);
+                    try {
+                        if (!hasRequireAndReplace(goMod, modulePath, RELATIVE_DIRECTORY)) {
+                            // Go 命令成功但文件内容不满足约束时给出确定性失败，而不是假成功。
+                            console.error("autogo_scriptengine 依赖图仍不完整：必须同时包含 require 与 replace。");
+                            return;
+                        }
+                    } catch (IOException error) {
+                        // 最终文件读取失败同样不进入成功路径。
+                        console.error("无法复核 Go 依赖图：" + error.getMessage());
+                        return;
+                    }
+                    finishInitialization(project, dependency);
+                });
             });
         });
     }

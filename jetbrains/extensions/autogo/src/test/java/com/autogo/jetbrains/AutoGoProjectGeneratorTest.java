@@ -181,8 +181,6 @@ final class AutoGoProjectGeneratorTest {
         assumeTrue(Files.isRegularFile(engine.resolve("go.mod")), "local autogo_scriptengine is unavailable");
         String source = AutoGoProjectGenerator.renderEngineSource("android", "ALL", List.of(), false);
         Files.writeString(projectRoot.resolve("main.go"), source);
-        Path goja = Path.of("/Users/zing/Documents/goja-debug");
-        assumeTrue(Files.isRegularFile(goja.resolve("go.mod")), "local goja debug fork is unavailable");
         Files.writeString(projectRoot.resolve("go.mod"), """
                 module autogo-generated-entry-test
 
@@ -192,7 +190,8 @@ final class AutoGoProjectGeneratorTest {
 
                 replace github.com/ZingYao/autogo_scriptengine => %s
                 replace github.com/dop251/goja => %s
-                """.formatted(engine, goja));
+                """.formatted(engine, AutoGoScriptEngineDependencyService.GOJA_DEBUG_REPLACEMENT
+                        .replace("@", " ")));
         ProcessBuilder tidyBuilder = new ProcessBuilder("go", "mod", "tidy")
                 .directory(projectRoot.toFile()).redirectErrorStream(true);
         tidyBuilder.environment().put("CGO_ENABLED", "0");
@@ -219,8 +218,6 @@ final class AutoGoProjectGeneratorTest {
         assumeTrue(Files.isRegularFile(engine.resolve("go.mod")), "local autogo_scriptengine is unavailable");
         Files.writeString(projectRoot.resolve("main.go"),
                 AutoGoProjectGenerator.renderEngineSource("android", "ALL", List.of(), false));
-        Path goja = Path.of("/Users/zing/Documents/goja-debug");
-        assumeTrue(Files.isRegularFile(goja.resolve("go.mod")), "local goja debug fork is unavailable");
         Files.writeString(projectRoot.resolve("go.mod"), """
                 module autogo-generated-protocol-test
 
@@ -230,7 +227,8 @@ final class AutoGoProjectGeneratorTest {
 
                 replace github.com/ZingYao/autogo_scriptengine => %s
                 replace github.com/dop251/goja => %s
-                """.formatted(engine, goja));
+                """.formatted(engine, AutoGoScriptEngineDependencyService.GOJA_DEBUG_REPLACEMENT
+                        .replace("@", " ")));
         ProcessBuilder tidyBuilder = new ProcessBuilder("go", "mod", "tidy")
                 .directory(projectRoot.toFile()).redirectErrorStream(true);
         tidyBuilder.environment().put("CGO_ENABLED", "0");
