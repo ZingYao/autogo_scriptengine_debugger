@@ -1,83 +1,110 @@
-name: Build and Release
+name: Build and Release IDE Extensions
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: Build and Release
+  build-and-release:
+    name: Build VSCode and JetBrains extensions
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
-      - name: Checkout code
+      - name: Checkout release source
         uses: actions/checkout@v4
 
-      - name: Setup Go
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          echo "value=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate extension versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          node -e 'const p=require("./vscode/extensions/autogo/package.json"); if(p.version!==process.argv[1]) throw new Error(`VSCode version ${p.version} != ${process.argv[1]}`)' "${version}"
+          grep -Fx "pluginVersion=${version}" jetbrains/extensions/autogo/gradle.properties
+
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: "1.24.4"
+          cache: false
 
-      - name: Get version
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Build for Windows
-        run: |
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o AutoGoScriptEngineDebugger.exe .
-          zip AutoGoScriptEngineDebugger-Windows.zip AutoGoScriptEngineDebugger.exe
-
-      - name: Build for macOS ARM
-        run: |
-          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o AutoGoScriptEngineDebuggerArm .
-          chmod +x AutoGoScriptEngineDebuggerArm
-          tar -czf AutoGoScriptEngineDebugger-macOS-ARM.tar.gz AutoGoScriptEngineDebuggerArm
-
-      - name: Build for macOS AMD
-        run: |
-          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o AutoGoScriptEngineDebuggerAmd .
-          chmod +x AutoGoScriptEngineDebuggerAmd
-          tar -czf AutoGoScriptEngineDebugger-macOS-AMD.tar.gz AutoGoScriptEngineDebuggerAmd
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
-          name: Release ${{ steps.get_version.outputs.VERSION }}
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: vscode/extensions/autogo/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Install VSCode dependencies
+        working-directory: vscode/extensions/autogo
+        run: npm ci
+
+      - name: Test VSCode extension
+        working-directory: vscode/extensions/autogo
+        run: npm test
+
+      - name: Package VSCode extension
+        working-directory: vscode/extensions/autogo
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/release"
+          npx --yes @vscode/vsce@3.6.0 package \
+            --out "${GITHUB_WORKSPACE}/release/autogo-vscode-${{ steps.version.outputs.value }}.vsix"
+
+      - name: Test and package JetBrains extension
+        working-directory: jetbrains/extensions/autogo
+        run: ./gradlew --no-daemon test buildPlugin
+
+      - name: Collect JetBrains extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "jetbrains/extensions/autogo/build/distributions/autogo-jetbrains-${{ steps.version.outputs.value }}.zip" \
+            "release/autogo-jetbrains-${{ steps.version.outputs.value }}.zip"
+          cd release
+          sha256sum * > SHA256SUMS
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: autogo-ide-extensions-${{ steps.version.outputs.value }}
+          path: release/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: AutoGo Script Engine Console ${{ github.ref_name }}
+          generate_release_notes: true
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
           files: |
-            AutoGoScriptEngineDebugger-Windows.zip
-            AutoGoScriptEngineDebugger-macOS-ARM.tar.gz
-            AutoGoScriptEngineDebugger-macOS-AMD.tar.gz
-          body: |
-            ## AutoGo ScriptEngine Debugger ${{ steps.get_version.outputs.VERSION }}
-            
-            ### 下载说明
-            
-            - **Windows**: `AutoGoScriptEngineDebugger-Windows.zip`
-            - **macOS ARM (M1/M2/M3)**: `AutoGoScriptEngineDebugger-macOS-ARM.tar.gz`
-            - **macOS AMD (Intel)**: `AutoGoScriptEngineDebugger-macOS-AMD.tar.gz`
-            
-            ### 安装方法
-            
-            #### Windows
-            1. 下载 `AutoGoScriptEngineDebugger-Windows.zip`
-            2. 解压缩得到 `AutoGoScriptEngineDebugger.exe`
-            3. 双击运行或在命令行中执行
-            
-            #### macOS
-            1. 下载对应架构的压缩包
-            2. 解压缩：`tar -xzf AutoGoScriptEngineDebugger-*.tar.gz`
-            3. 添加执行权限：`chmod +x AutoGoScriptEngineDebugger*`
-            4. 运行：`./AutoGoScriptEngineDebugger*`
-            
-            ### 更新内容
-            
-            请查看 [Commits](https://github.com/${{ github.repository }}/commits/${{ steps.get_version.outputs.VERSION }}) 了解详细更新内容。
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            release/autogo-vscode-${{ steps.version.outputs.value }}.vsix
+            release/autogo-jetbrains-${{ steps.version.outputs.value }}.zip
+            release/SHA256SUMS

@@ -1,0 +1,173 @@
+<idea-plugin>
+  <id>com.autogo.jetbrains</id>
+  <name>AutoGo Script Engine Console</name>
+  <vendor>zing</vendor>
+  <description><![CDATA[
+    <p>在 JetBrains IDE 顶部菜单和独立 Console 中运行 AutoGo AG、ADB 与资源同步操作。</p>
+  ]]></description>
+  <depends>com.intellij.modules.platform</depends>
+  <incompatible-with>com.glua.jetbrains</incompatible-with>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <applicationService serviceImplementation="com.autogo.jetbrains.AutoGoSettings"/>
+    <applicationService serviceImplementation="com.glua.jetbrains.GluaSettings"/>
+    <projectService serviceImplementation="com.autogo.jetbrains.AutoGoConsoleService"/>
+    <projectService serviceImplementation="com.autogo.jetbrains.AutoGoProcessService"/>
+    <projectService serviceImplementation="com.autogo.jetbrains.AutoGoRemoteEngineService"/>
+    <projectService serviceImplementation="com.autogo.jetbrains.AutoGoNodeAssistantService"/>
+    <projectService serviceImplementation="com.autogo.jetbrains.AutoGoDocumentationService"/>
+    <postStartupActivity implementation="com.autogo.jetbrains.AutoGoStartupActivity"/>
+    <applicationConfigurable
+      id="com.autogo.settings"
+      instance="com.autogo.jetbrains.AutoGoSettingsConfigurable"
+      displayName="AutoGo Script Engine Console"/>
+    <applicationConfigurable
+      id="com.autogo.settings.glua"
+      parentId="com.autogo.settings"
+      instance="com.glua.jetbrains.GluaSettingsConfigurable"
+      displayName="GLua"/>
+    <toolWindow
+      id="AutoGo Script Engine Console"
+      anchor="bottom"
+      icon="/icons/logo.svg"
+      factoryClass="com.autogo.jetbrains.AutoGoToolWindowFactory"/>
+    <toolWindow
+      id="AutoGo Node Assistant"
+      anchor="right"
+      icon="/icons/node.svg"
+      factoryClass="com.autogo.jetbrains.AutoGoNodeAssistantToolWindowFactory"/>
+    <toolWindow
+      id="AutoGo Documentation"
+      anchor="right"
+      icon="/icons/docs.svg"
+      factoryClass="com.autogo.jetbrains.AutoGoDocumentationToolWindowFactory"/>
+
+    <fileType
+      name="GLua"
+      language="GLua"
+      implementationClass="com.glua.jetbrains.GluaFileType"
+      fieldName="INSTANCE"
+      extensions="glua;lua"/>
+    <lang.syntaxHighlighterFactory
+      language="GLua"
+      implementationClass="com.glua.jetbrains.GluaSyntaxHighlighterFactory"/>
+    <lang.parserDefinition
+      language="GLua"
+      implementationClass="com.glua.jetbrains.GluaParserDefinition"/>
+    <lang.commenter
+      language="GLua"
+      implementationClass="com.glua.jetbrains.GluaCommenter"/>
+    <annotator
+      language="GLua"
+      implementationClass="com.glua.jetbrains.GluaAnnotator"/>
+    <completion.contributor
+      language="GLua"
+      implementationClass="com.glua.jetbrains.GluaCompletionContributor"/>
+    <lang.documentationProvider
+      language="GLua"
+      implementationClass="com.glua.jetbrains.GluaDocumentationProvider"/>
+    <gotoDeclarationHandler
+      implementation="com.glua.jetbrains.GluaGotoDeclarationHandler"/>
+    <psi.referenceContributor
+      language="GLua"
+      implementation="com.glua.jetbrains.GluaBuiltinReferenceContributor"/>
+    <enterHandlerDelegate
+      implementation="com.glua.jetbrains.GluaEnterHandler"/>
+    <postFormatProcessor
+      implementation="com.glua.jetbrains.GluaPostFormatProcessor"/>
+    <platform.lsp.serverSupportProvider
+      implementation="com.glua.jetbrains.GluaLspServerSupportProvider"/>
+    <xdebugger.breakpointType
+      implementation="com.glua.jetbrains.GluaLineBreakpointType"/>
+    <configurationType
+      implementation="com.glua.jetbrains.GluaDapRunConfigurationType"/>
+    <programRunner
+      id="GluaDebugProgramRunner"
+      implementation="com.glua.jetbrains.GluaDebugProgramRunner"/>
+  </extensions>
+
+  <actions>
+    <action id="AutoGo.ShowConsole" class="com.autogo.jetbrains.AutoGoShowConsoleAction" text="显示 AutoGo Script Engine Console"/>
+    <action id="AutoGo.QuickDebug" class="com.autogo.jetbrains.AutoGoMenuActions$QuickDebugAction" text="快速调试">
+      <keyboard-shortcut keymap="$default" first-keystroke="F6"/>
+    </action>
+    <action id="AutoGo.Run" class="com.autogo.jetbrains.AutoGoMenuActions$RunAction" text="运行当前 Lua/GLua 文件">
+      <keyboard-shortcut keymap="$default" first-keystroke="F7"/>
+    </action>
+    <action id="AutoGo.Stop" class="com.autogo.jetbrains.AutoGoMenuActions$StopAction" text="停止运行">
+      <keyboard-shortcut keymap="$default" first-keystroke="F8"/>
+    </action>
+    <action id="AutoGo.RemoteEngine" class="com.autogo.jetbrains.AutoGoRemoteEngineAction" text="启动移动端引擎"/>
+    <action id="AutoGo.SyncResources" class="com.autogo.jetbrains.AutoGoSyncResourcesAction" text="同步资源">
+      <keyboard-shortcut keymap="$default" first-keystroke="F10"/>
+    </action>
+    <action id="AutoGo.NodeServe" class="com.autogo.jetbrains.AutoGoNodeServeAction" text="节点助手"/>
+
+    <action id="AutoGo.BuildArm64" class="com.autogo.jetbrains.AutoGoMenuActions$BuildArm64Action" text="arm64-v8a"/>
+    <action id="AutoGo.BuildX8664" class="com.autogo.jetbrains.AutoGoMenuActions$BuildX8664Action" text="x86_64"/>
+    <action id="AutoGo.BuildX86" class="com.autogo.jetbrains.AutoGoMenuActions$BuildX86Action" text="x86"/>
+    <action id="AutoGo.BuildApk" class="com.autogo.jetbrains.AutoGoMenuActions$BuildApkAction" text="apk"/>
+    <group id="AutoGo.BuildMenu" text="编译项目" popup="true" icon="/icons/build.svg">
+      <reference ref="AutoGo.BuildArm64"/>
+      <reference ref="AutoGo.BuildX8664"/>
+      <reference ref="AutoGo.BuildX86"/>
+      <reference ref="AutoGo.BuildApk"/>
+    </group>
+
+    <group id="AutoGo.DevicesMenu" class="com.autogo.jetbrains.AutoGoMenuActions$DevicesGroup" text="连接设备" popup="true" icon="/icons/device.svg"/>
+    <action id="AutoGo.SwitchToWireless" class="com.autogo.jetbrains.AutoGoMenuActions$SwitchToWirelessAction" text="切换为无线连接"/>
+    <action id="AutoGo.PairWireless" class="com.autogo.jetbrains.AutoGoMenuActions$PairWirelessAction" text="无线调试配对"/>
+
+    <action id="AutoGo.GluaFormat" class="com.glua.jetbrains.GluaFormatAction" text="格式化当前文件"/>
+    <action id="AutoGo.GluaCompileCurrent" class="com.autogo.jetbrains.AutoGoGluacCompileAction" text="编译当前文件为 GLuac"/>
+    <action id="AutoGo.GluaCompileRemoteRun" class="com.autogo.jetbrains.AutoGoGluacRemoteRunAction" text="编译并远程运行 GLuac"/>
+    <action id="AutoGo.GluaCompileRemoteDebug" class="com.autogo.jetbrains.AutoGoGluacRemoteDebugAction" text="编译并远程调试 GLuac"/>
+    <action id="AutoGo.GluaRemoteRunCurrent" class="com.autogo.jetbrains.AutoGoRemoteRunCurrentAction" text="远程运行当前脚本"/>
+    <group id="AutoGo.GluaToolsMenu" class="com.autogo.jetbrains.AutoGoGluaToolsGroup" text="GLua 工具" popup="true" icon="/icons/glua.svg">
+      <reference ref="AutoGo.GluaRemoteRunCurrent"/>
+      <reference ref="AutoGo.GluaCompileCurrent"/>
+      <reference ref="AutoGo.GluaCompileRemoteRun"/>
+      <reference ref="AutoGo.GluaCompileRemoteDebug"/>
+      <reference ref="AutoGo.GluaFormat"/>
+    </group>
+
+    <action id="AutoGo.InitAndroid" class="com.autogo.jetbrains.AutoGoMenuActions$InitAndroidAction" text="Android"/>
+    <action id="AutoGo.InitIos" class="com.autogo.jetbrains.AutoGoMenuActions$InitIosAction" text="iOS"/>
+    <group id="AutoGo.InitMenu" text="初始化项目" popup="true" icon="/icons/init.svg">
+      <reference ref="AutoGo.InitAndroid"/>
+      <reference ref="AutoGo.InitIos"/>
+    </group>
+
+    <action id="AutoGo.PushFile" class="com.autogo.jetbrains.AutoGoMenuActions$PushFileAction" text="推送文件"/>
+    <action id="AutoGo.OfficialDocs" class="com.autogo.jetbrains.AutoGoMenuActions$OfficialDocsAction" text="官方文档"/>
+    <action id="AutoGo.Settings" class="com.autogo.jetbrains.AutoGoMenuActions$SettingsAction" text="其他设置"/>
+    <action id="AutoGo.ApplyEngineConfig" class="com.autogo.jetbrains.AutoGoMenuActions$ApplyEngineConfigAction" text="应用引擎配置"/>
+    <action id="AutoGo.CheckUpdate" class="com.autogo.jetbrains.AutoGoUpdateAction" text="检查更新"/>
+
+    <group id="AutoGo.MainMenu" text="AutoGo Script Engine Console" popup="true" icon="/icons/logo.svg">
+      <reference ref="AutoGo.ShowConsole"/>
+      <separator/>
+      <reference ref="AutoGo.QuickDebug"/>
+      <reference ref="AutoGo.Run"/>
+      <reference ref="AutoGo.Stop"/>
+      <reference ref="AutoGo.RemoteEngine"/>
+      <reference ref="AutoGo.SyncResources"/>
+      <reference ref="AutoGo.NodeServe"/>
+      <separator/>
+      <reference ref="AutoGo.BuildMenu"/>
+      <reference ref="AutoGo.GluaToolsMenu"/>
+      <reference ref="AutoGo.DevicesMenu"/>
+      <reference ref="AutoGo.SwitchToWireless"/>
+      <reference ref="AutoGo.PairWireless"/>
+      <reference ref="AutoGo.InitMenu"/>
+      <reference ref="AutoGo.PushFile"/>
+      <separator/>
+      <reference ref="AutoGo.OfficialDocs"/>
+      <reference ref="AutoGo.ApplyEngineConfig"/>
+      <reference ref="AutoGo.Settings"/>
+      <reference ref="AutoGo.CheckUpdate"/>
+      <add-to-group group-id="MainMenu" anchor="last"/>
+      <add-to-group group-id="ToolsMenu" anchor="first"/>
+    </group>
+  </actions>
+</idea-plugin>
