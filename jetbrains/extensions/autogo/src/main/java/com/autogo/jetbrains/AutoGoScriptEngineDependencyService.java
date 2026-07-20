@@ -20,7 +20,7 @@ public final class AutoGoScriptEngineDependencyService {
     static final String RELATIVE_DIRECTORY = ".autogo/deps/autogo_scriptengine";
     static final String LOCAL_REQUIRE_VERSION = "v0.0.0";
     static final String GOJA_MODULE = "github.com/dop251/goja";
-    static final String GOJA_DEBUG_REPLACEMENT = "github.com/ZingYao/goja@v0.0.1-autogo.1";
+    static final String GOJA_DEBUG_REPLACEMENT = "github.com/ZingYao/goja@v0.0.1-autogo.2";
     private static final Pattern MODULE_LINE = Pattern.compile("(?m)^\\s*module\\s+([^\\s]+)\\s*$");
 
     private AutoGoScriptEngineDependencyService() {
