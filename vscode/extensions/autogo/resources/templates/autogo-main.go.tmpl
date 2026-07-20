@@ -29,7 +29,7 @@ import (
 	jsmodel "github.com/ZingYao/autogo_scriptengine/js_engine/model"
 	"github.com/ZingYao/autogo_scriptengine/lua_engine"
 	luamodel "github.com/ZingYao/autogo_scriptengine/lua_engine/model"
-	gojadap "github.com/dop251/goja/debugger"
+	gojadap "github.com/ZingYao/goja/debugger"
 	gruntime "github.com/ZingYao/go-lua-vm/runtime"
 	runtimedap "github.com/ZingYao/go-lua-vm/runtime/dap"
 	luaall_models "{{LUA_MODELS_IMPORT}}"
@@ -483,7 +483,7 @@ func (c *controller) health(w http.ResponseWriter, r *http.Request) {
 func (c *controller) capabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet { methodNotAllowed(w); return }
 	c.mu.Lock(); defer c.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"service": "autogo-script-engine", "instanceId": c.instanceID, "protocolVersion": protocolVersion, "engineVersion": moduleVersion("github.com/ZingYao/autogo_scriptengine"), "runtimeVersion": moduleVersion("github.com/ZingYao/go-lua-vm"), "jsRuntimeVersion": moduleVersion("github.com/dop251/goja"), "state": c.state, "features": []string{"lua", "glua", "gluac", "javascript", "js", "dap", "incremental-sync", "set-variable", "websocket-control"}, "control": map[string]any{"transport": "http+websocket", "host": "127.0.0.1", "port": c.controlPort, "eventsPath": "/v1/events"}, "dap": map[string]any{"transport": "tcp", "host": "127.0.0.1", "port": c.dapPort, "luaPort": c.luaDapPort, "jsPort": c.jsDapPort}, "limits": map[string]any{"maxFileBytes": maxFileBytes, "maxBatchBytes": 4 * maxFileBytes}})
+	writeJSON(w, http.StatusOK, map[string]any{"service": "autogo-script-engine", "instanceId": c.instanceID, "protocolVersion": protocolVersion, "engineVersion": moduleVersion("github.com/ZingYao/autogo_scriptengine"), "runtimeVersion": moduleVersion("github.com/ZingYao/go-lua-vm"), "jsRuntimeVersion": moduleVersion("github.com/ZingYao/goja"), "state": c.state, "features": []string{"lua", "glua", "gluac", "javascript", "js", "dap", "incremental-sync", "set-variable", "websocket-control"}, "control": map[string]any{"transport": "http+websocket", "host": "127.0.0.1", "port": c.controlPort, "eventsPath": "/v1/events"}, "dap": map[string]any{"transport": "tcp", "host": "127.0.0.1", "port": c.dapPort, "luaPort": c.luaDapPort, "jsPort": c.jsDapPort}, "limits": map[string]any{"maxFileBytes": maxFileBytes, "maxBatchBytes": 4 * maxFileBytes}})
 }
 
 func listenerPortString(address string) int { _, raw, err := net.SplitHostPort(address); if err != nil { return 0 }; port, _ := strconv.Atoi(raw); return port }

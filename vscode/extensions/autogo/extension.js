@@ -35,8 +35,6 @@ const {
 
 const ENGINE_REPOSITORY = "https://github.com/ZingYao/autogo_scriptengine.git";
 const ENGINE_DIRECTORY = ".autogo/deps/autogo_scriptengine";
-const GOJA_MODULE = "github.com/dop251/goja";
-const GOJA_DEBUG_REPLACE = "github.com/ZingYao/goja@v0.0.1-autogo.2";
 const CONTROL_PORT = 38696;
 const DAP_PORT = 38697;
 const CHANGELOG_URL = "https://autogo-1257133387.cos.ap-shanghai.myqcloud.com/changelog.md";
@@ -584,13 +582,11 @@ async function initializeEngineDependency(root) {
   const go = toolPath("go");
   await executeProcess(go, ["mod", "edit", `-require=${modulePath}@v0.0.0`]);
   await executeProcess(go, ["mod", "edit", `-replace=${modulePath}=./${ENGINE_DIRECTORY}`]);
-  await executeProcess(go, ["mod", "edit", `-replace=${GOJA_MODULE}=${GOJA_DEBUG_REPLACE}`]);
   await executeProcess(go, ["mod", "tidy"]);
   let goMod = fs.readFileSync(path.join(root, "go.mod"), "utf8");
   if (!hasRequireAndReplace(goMod, modulePath, ENGINE_DIRECTORY)) {
     await executeProcess(go, ["mod", "edit", `-require=${modulePath}@v0.0.0`]);
     await executeProcess(go, ["mod", "edit", `-replace=${modulePath}=./${ENGINE_DIRECTORY}`]);
-    await executeProcess(go, ["mod", "edit", `-replace=${GOJA_MODULE}=${GOJA_DEBUG_REPLACE}`]);
     goMod = fs.readFileSync(path.join(root, "go.mod"), "utf8");
     if (!hasRequireAndReplace(goMod, modulePath, ENGINE_DIRECTORY)) throw new Error("go.mod 未同时写入 autogo_scriptengine require 与 replace");
   }

@@ -2,7 +2,7 @@
   "name": "autogo",
   "displayName": "AutoGo Script Engine Console",
   "description": "AutoGo AG、ADB、远程 Lua/GLua/JavaScript 引擎、DAP 调试与完整 GLua 语言支持。",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "publisher": "Zing",
   "author": "zing",
   "repository": {

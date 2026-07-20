@@ -189,9 +189,7 @@ final class AutoGoProjectGeneratorTest {
                 require github.com/ZingYao/autogo_scriptengine v0.0.0
 
                 replace github.com/ZingYao/autogo_scriptengine => %s
-                replace github.com/dop251/goja => %s
-                """.formatted(engine, AutoGoScriptEngineDependencyService.GOJA_DEBUG_REPLACEMENT
-                        .replace("@", " ")));
+                """.formatted(engine));
         ProcessBuilder tidyBuilder = new ProcessBuilder("go", "mod", "tidy")
                 .directory(projectRoot.toFile()).redirectErrorStream(true);
         tidyBuilder.environment().put("CGO_ENABLED", "0");
@@ -226,9 +224,7 @@ final class AutoGoProjectGeneratorTest {
                 require github.com/ZingYao/autogo_scriptengine v0.0.0
 
                 replace github.com/ZingYao/autogo_scriptengine => %s
-                replace github.com/dop251/goja => %s
-                """.formatted(engine, AutoGoScriptEngineDependencyService.GOJA_DEBUG_REPLACEMENT
-                        .replace("@", " ")));
+                """.formatted(engine));
         ProcessBuilder tidyBuilder = new ProcessBuilder("go", "mod", "tidy")
                 .directory(projectRoot.toFile()).redirectErrorStream(true);
         tidyBuilder.environment().put("CGO_ENABLED", "0");
